@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Menu } from './ui/Menu';
 import { GameScreen } from './ui/GameScreen';
 import { initWallet, useWallet } from './lib/wallet';
-import { loadProgress, recordRun } from './game/progress';
+import { loadProgress, recordRun, startNewJourney } from './game/progress';
 import { startRun, submitRun } from './lib/api';
 import type { Achievement } from './game/progress';
 import type { RunResult } from './game/types';
@@ -13,6 +13,17 @@ export interface FinishReport {
   newAchievements: Achievement[];
   verdict: string | null;
   verified: boolean;
+  /** Completion bonus paid for this run. */
+  bonus: number;
+  /** Points awarded for achievements unlocked by this run. */
+  achievementPoints: number;
+  /** True on the run that clears level 100 for the current journey. */
+  campaignComplete: boolean;
+  cyclesCompleted: number;
+  lifetimePoints: number;
+  lifetimeDigo: number;
+  lifetimeBonus: number;
+  levelsCleared: number;
 }
 
 type Route =
@@ -57,12 +68,7 @@ export function App() {
       let verified = false;
       if (current.name === 'game' && current.token) {
         try {
-          const res = await submitRun(
-            current.token,
-            result,
-            'DIGO Player',
-            wallet.address,
-          );
+          const res = await submitRun(current.token, result, 'DIGO Player', wallet.address);
           verified = Boolean(res.accepted);
           verdict = res.accepted
             ? `Server verified${res.rank ? ` · rank #${res.rank}` : ''}`
@@ -79,6 +85,14 @@ export function App() {
         newAchievements: outcome.newAchievements,
         verdict,
         verified,
+        bonus: outcome.bonus,
+        achievementPoints: outcome.achievementPoints,
+        campaignComplete: outcome.campaignComplete,
+        cyclesCompleted: outcome.cyclesCompleted,
+        lifetimePoints: outcome.lifetimePoints,
+        lifetimeDigo: outcome.lifetimeDigo,
+        lifetimeBonus: outcome.lifetimeBonus,
+        levelsCleared: outcome.levelsCleared,
       };
     },
     [route, wallet.address],
@@ -92,9 +106,19 @@ export function App() {
         seed={route.seed}
         onExit={() => setRoute({ name: 'menu' })}
         onRetry={() =>
-          setRoute({ ...route, attempt: route.attempt + 1, seed: Math.floor(Math.random() * 2 ** 31) })
+          setRoute({
+            ...route,
+            attempt: route.attempt + 1,
+            seed: Math.floor(Math.random() * 2 ** 31),
+          })
         }
         onNext={(level) => void launch(level)}
+        onNewJourney={() => {
+          // Restarts the campaign at level 1; lifetime points, DIGO and
+          // achievements stay untouched.
+          startNewJourney();
+          void launch(1);
+        }}
         onFinish={finish}
       />
     );
