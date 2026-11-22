@@ -1,176 +1,197 @@
-/**
- * InputController — the heart of the mobile feel.
- *
- * Requirements implemented here:
- *  - Pointer Events only (works on Android Chrome, iOS Safari, desktop).
- *  - Pointer capture so a finger that slides off the pad keeps controlling DIGO.
- *  - Multitouch safe: the first pointer that lands on the pad owns the drag; a
- *    second finger is ignored instead of hijacking the movement.
- *  - Absolute horizontal mapping: DIGO follows the finger position with smooth
- *    interpolation done by the engine, never a delayed "swipe".
- *  - pointercancel / blur / visibilitychange release cleanly — no stuck motion.
- *  - Optional left/right buttons run in parallel for players who prefer them.
- */
-export class InputController {
-  /** -1..1 normalised horizontal target, updated every frame. */
-  target = 0;
-  /** True while a finger is down on the pad or a direction button is held. */
-  active = false;
+import { PLAYER } from '../types';
 
+/**
+ * Touch / mouse / keyboard input.
+ *
+ * The primary control is a large hold-and-drag pad: while a finger is held the
+ * character follows the horizontal finger position absolutely, so movement
+ * continues without interruption and never gets "stuck".
+ *
+ * Robustness rules:
+ *  - Pointer Events with pointer capture, one tracked pointer id only.
+ *  - pointerup / pointercancel / lostpointercapture all release the pad.
+ *  - touch-action:none + preventDefault stop scrolling and text selection.
+ *  - Optional left/right buttons and keyboard set a direction instead.
+ */
+
+export interface InputOptions {
+  drag: boolean;
+  buttons: boolean;
+}
+
+export class InputController {
   private pad: HTMLElement | null = null;
   private pointerId: number | null = null;
-  private lastFromPad = 0;
-  private buttonDir = 0;
-  private enabled = true;
-  private keyLeft = false;
-  private keyRight = false;
+  private target: number | null = null;
+  private dir = 0;
+  private jumpQueued = false;
+  private readonly keys = new Set<string>();
+  private readonly lane: number;
+  private readonly options: InputOptions;
+  private bound = false;
 
-  private readonly onPointerDown = (e: PointerEvent) => {
-    if (!this.enabled || !this.pad) return;
-    // Multitouch: only the first pointer owns the drag.
-    if (this.pointerId !== null) return;
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    e.preventDefault();
-    this.pointerId = e.pointerId;
-    this.active = true;
-    try {
-      this.pad.setPointerCapture(e.pointerId);
-    } catch {
-      /* capture is best-effort; move events still arrive while inside */
-    }
-    this.updateFromPointer(e);
-  };
+  constructor(options: InputOptions) {
+    this.options = options;
+    this.lane = PLAYER.lane;
+  }
 
-  private readonly onPointerMove = (e: PointerEvent) => {
-    if (!this.enabled) return;
-    if (this.pointerId !== e.pointerId) return;
-    e.preventDefault();
-    this.updateFromPointer(e);
-  };
+  /* ----------------------------- pad ------------------------------ */
 
-  private readonly onPointerUp = (e: PointerEvent) => {
-    if (this.pointerId !== e.pointerId) return;
-    this.releasePointer();
-  };
-
-  private readonly onPointerCancel = (e: PointerEvent) => {
-    if (this.pointerId !== e.pointerId) return;
-    // Keep the last target instead of snapping back: no visual jump on cancel.
-    this.releasePointer(true);
-  };
-
-  private readonly onContextMenu = (e: Event) => e.preventDefault();
-  private readonly onBlur = () => this.releaseAll();
-
-  private readonly onKeyDown = (e: KeyboardEvent) => {
-    if (!this.enabled) return;
-    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
-      this.keyLeft = true;
-      this.active = true;
-    } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
-      this.keyRight = true;
-      this.active = true;
-    }
-  };
-
-  private readonly onKeyUp = (e: KeyboardEvent) => {
-    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') this.keyLeft = false;
-    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') this.keyRight = false;
-    if (!this.keyLeft && !this.keyRight && this.pointerId === null && this.buttonDir === 0) {
-      this.active = false;
-    }
-  };
-
-  attach(pad: HTMLElement): void {
-    this.detach();
-    this.pad = pad;
-    pad.addEventListener('pointerdown', this.onPointerDown);
-    pad.addEventListener('pointermove', this.onPointerMove);
-    pad.addEventListener('pointerup', this.onPointerUp);
-    pad.addEventListener('pointercancel', this.onPointerCancel);
-    pad.addEventListener('pointerleave', this.onPointerCancel);
-    pad.addEventListener('contextmenu', this.onContextMenu);
+  attachPad(el: HTMLElement | null): void {
+    this.detachPad();
+    if (!el || !this.options.drag) return;
+    this.pad = el;
+    el.addEventListener('pointerdown', this.onPointerDown);
+    el.addEventListener('pointermove', this.onPointerMove);
+    el.addEventListener('pointerup', this.onPointerUp);
+    el.addEventListener('pointercancel', this.onPointerUp);
+    el.addEventListener('lostpointercapture', this.onPointerUp);
+    el.addEventListener('contextmenu', this.onContextMenu);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
+    this.bound = true;
   }
 
-  detach(): void {
-    const pad = this.pad;
-    if (pad) {
-      pad.removeEventListener('pointerdown', this.onPointerDown);
-      pad.removeEventListener('pointermove', this.onPointerMove);
-      pad.removeEventListener('pointerup', this.onPointerUp);
-      pad.removeEventListener('pointercancel', this.onPointerCancel);
-      pad.removeEventListener('pointerleave', this.onPointerCancel);
-      pad.removeEventListener('contextmenu', this.onContextMenu);
+  detachPad(): void {
+    if (this.bound) {
+      window.removeEventListener('keydown', this.onKeyDown);
+      window.removeEventListener('keyup', this.onKeyUp);
+      window.removeEventListener('blur', this.onBlur);
+      this.bound = false;
     }
-    window.removeEventListener('keydown', this.onKeyDown);
-    window.removeEventListener('keyup', this.onKeyUp);
-    window.removeEventListener('blur', this.onBlur);
+    const el = this.pad;
+    if (el) {
+      el.removeEventListener('pointerdown', this.onPointerDown);
+      el.removeEventListener('pointermove', this.onPointerMove);
+      el.removeEventListener('pointerup', this.onPointerUp);
+      el.removeEventListener('pointercancel', this.onPointerUp);
+      el.removeEventListener('lostpointercapture', this.onPointerUp);
+      el.removeEventListener('contextmenu', this.onContextMenu);
+    }
     this.pad = null;
-  }
-
-  setEnabled(enabled: boolean): void {
-    this.enabled = enabled;
-    if (!enabled) this.releaseAll();
-  }
-
-  /** Called by the on-screen direction buttons (pointerdown/up). */
-  setButton(dir: 'left' | 'right', pressed: boolean): void {
-    if (!this.enabled) return;
-    if (dir === 'left') this.buttonDir = pressed ? -1 : this.buttonDir === -1 ? 0 : this.buttonDir;
-    else this.buttonDir = pressed ? 1 : this.buttonDir === 1 ? 0 : this.buttonDir;
-    this.active = pressed || this.pointerId !== null || this.keyLeft || this.keyRight;
-  }
-
-  releaseAll(): void {
     this.pointerId = null;
-    this.buttonDir = 0;
-    this.keyLeft = false;
-    this.keyRight = false;
-    this.active = false;
-    this.target = 0;
+    this.target = null;
   }
 
-  private releasePointer(keepTarget = false): void {
-    const pad = this.pad;
-    const id = this.pointerId;
-    if (pad && id !== null) {
-      try {
-        if (pad.hasPointerCapture(id)) pad.releasePointerCapture(id);
-      } catch {
-        /* ignore */
-      }
+  private onContextMenu = (e: Event): void => {
+    e.preventDefault();
+  };
+
+  private positionFromEvent(e: PointerEvent): number {
+    const el = this.pad;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    const t = (e.clientX - rect.left) / rect.width;
+    return Math.max(-1, Math.min(1, t * 2 - 1)) * this.lane;
+  }
+
+  private onPointerDown = (e: PointerEvent): void => {
+    if (this.pointerId !== null) return; // ignore extra fingers
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    this.pointerId = e.pointerId;
+    try {
+      this.pad?.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort */
     }
+    this.target = this.positionFromEvent(e);
+  };
+
+  private onPointerMove = (e: PointerEvent): void => {
+    if (this.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    this.target = this.positionFromEvent(e);
+  };
+
+  private onPointerUp = (e: PointerEvent): void => {
+    if (this.pointerId !== null && e.pointerId !== this.pointerId) return;
     this.pointerId = null;
-    if (!keepTarget) this.lastFromPad = this.lastFromPad;
-    this.active = this.buttonDir !== 0 || this.keyLeft || this.keyRight;
+    this.target = null;
+    try {
+      if (this.pad?.hasPointerCapture(e.pointerId)) {
+        this.pad.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
+  /* --------------------------- keyboard --------------------------- */
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.repeat) {
+      if (e.code === 'Space') e.preventDefault();
+      return;
+    }
+    const code = e.code;
+    if (code === 'ArrowLeft' || code === 'KeyA') {
+      this.keys.add('left');
+      e.preventDefault();
+    } else if (code === 'ArrowRight' || code === 'KeyD') {
+      this.keys.add('right');
+      e.preventDefault();
+    } else if (code === 'Space' || code === 'ArrowUp' || code === 'KeyW') {
+      this.jumpQueued = true;
+      e.preventDefault();
+    }
+    this.syncDir();
+  };
+
+  private onKeyUp = (e: KeyboardEvent): void => {
+    const code = e.code;
+    if (code === 'ArrowLeft' || code === 'KeyA') this.keys.delete('left');
+    if (code === 'ArrowRight' || code === 'KeyD') this.keys.delete('right');
+    this.syncDir();
+  };
+
+  private onBlur = (): void => {
+    this.keys.clear();
+    this.dir = 0;
+    this.target = null;
+    this.pointerId = null;
+  };
+
+  /* ---------------------------- buttons --------------------------- */
+
+  /** Called by the on-screen arrow buttons (held). */
+  setDirection(dir: number): void {
+    this.dir = Math.max(-1, Math.min(1, dir));
   }
 
-  private updateFromPointer(e: PointerEvent): void {
-    const pad = this.pad;
-    if (!pad) return;
-    const rect = pad.getBoundingClientRect();
-    if (rect.width <= 0) return;
-    const ratio = (e.clientX - rect.left) / rect.width;
-    const clamped = Math.min(1, Math.max(0, ratio));
-    this.lastFromPad = clamped * 2 - 1;
-    this.target = this.lastFromPad;
+  private syncDir(): void {
+    const left = this.keys.has('left');
+    const right = this.keys.has('right');
+    this.dir = (right ? 1 : 0) - (left ? 1 : 0);
   }
 
-  /** Blends pad / buttons / keyboard into the final target for this frame. */
-  sample(): number {
-    if (!this.enabled) return 0;
-    if (this.pointerId !== null) return this.lastFromPad;
-    if (this.keyLeft && !this.keyRight) return -1;
-    if (this.keyRight && !this.keyLeft) return 1;
-    if (this.buttonDir !== 0) return this.buttonDir;
-    if (this.keyLeft && this.keyRight) return 0;
+  requestJump(): void {
+    this.jumpQueued = true;
+  }
+
+  consumeJump(): boolean {
+    if (!this.jumpQueued) return false;
+    this.jumpQueued = false;
+    return true;
+  }
+
+  /** Absolute target position, or null when the pad is not held. */
+  get targetX(): number | null {
     return this.target;
   }
 
-  get isDragging(): boolean {
+  get direction(): number {
+    return this.dir;
+  }
+
+  get holding(): boolean {
     return this.pointerId !== null;
+  }
+
+  dispose(): void {
+    this.detachPad();
+    this.keys.clear();
   }
 }
