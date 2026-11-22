@@ -276,4 +276,6 @@ export interface RunConfig {
   sfxVolume: number;
   haptics: boolean;
   controlMode: 'drag' | 'buttons' | 'both';
+  /** Render quality preset chosen in settings. */
+  quality: 'high' | 'medium' | 'low';
 }

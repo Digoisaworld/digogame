@@ -395,6 +395,10 @@ export class DigoCharacter {
     this.tail.rotation.set(0, 0, 0);
     this.crystal.rotation.set(0, 0, 0);
     this.eyeGroup.scale.set(1, 1, 1);
+    // Subtle living gaze so the eyes never look frozen.
+    const gaze = Math.sin(t * 1.4) * 0.022;
+    this.irisL.position.x = -0.185 + gaze;
+    this.irisR.position.x = 0.185 + gaze;
     this.group.scale.setScalar(this.stage.scale);
     this.aura.rotation.z = t * 0.9;
     this.crown.rotation.y = t * 0.6;

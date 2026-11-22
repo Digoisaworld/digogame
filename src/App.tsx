@@ -29,6 +29,7 @@ export default function App() {
         sfxVolume: profile.settings.sfx,
         haptics: profile.settings.haptics,
         controlMode: profile.settings.controls,
+        quality: profile.settings.quality,
       });
       setScreen('game');
     },

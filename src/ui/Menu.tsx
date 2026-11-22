@@ -31,6 +31,8 @@ const NAV: { id: Screen; label: string; icon: string }[] = [
 ];
 
 /** DIGO emblem drawn from the character palette of the active evolution stage. */
+const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
+
 export function DigoBadge({ stage, size = 132 }: { stage: number; size?: number }) {
   const def = stageDef(stage);
   const id = `digo-${stage}`;
@@ -39,8 +41,8 @@ export function DigoBadge({ stage, size = 132 }: { stage: number; size?: number 
       <defs>
         <radialGradient id={`${id}-fur`} cx="38%" cy="30%" r="80%">
           <stop offset="0%" stopColor="#fff3b0" />
-          <stop offset="55%" stopColor={def.fur} />
-          <stop offset="100%" stopColor={def.furDark} />
+          <stop offset="55%" stopColor={hex(def.fur)} />
+          <stop offset="100%" stopColor={hex(def.furDark)} />
         </radialGradient>
         <radialGradient id={`${id}-eye`} cx="40%" cy="35%" r="70%">
           <stop offset="0%" stopColor="#ffffff" />
@@ -53,8 +55,8 @@ export function DigoBadge({ stage, size = 132 }: { stage: number; size?: number 
         </linearGradient>
       </defs>
       {/* ears */}
-      <ellipse cx="26" cy="30" rx="15" ry="21" fill={def.furDark} transform="rotate(-22 26 30)" />
-      <ellipse cx="94" cy="30" rx="15" ry="21" fill={def.furDark} transform="rotate(22 94 30)" />
+      <ellipse cx="26" cy="30" rx="15" ry="21" fill={hex(def.furDark)} transform="rotate(-22 26 30)" />
+      <ellipse cx="94" cy="30" rx="15" ry="21" fill={hex(def.furDark)} transform="rotate(22 94 30)" />
       <ellipse cx="27" cy="32" rx="7" ry="11" fill="#ff9ec4" opacity="0.7" transform="rotate(-22 27 32)" />
       <ellipse cx="93" cy="32" rx="7" ry="11" fill="#ff9ec4" opacity="0.7" transform="rotate(22 93 32)" />
       {/* head */}
@@ -182,11 +184,13 @@ export function ModeSelect({
                   <span>{mode.bossInterval ? `Boss / ${mode.bossInterval}s` : 'No boss'}</span>
                 </div>
                 <ul className="mode-objectives">
-                  {mode.objectives.map((o) => (
-                    <li key={o.label}>
-                      {o.label}: <b>{o.target}</b>
+                  {mode.objective ? (
+                    <li key={mode.objective.label}>
+                      {mode.objective.label}: <b>{mode.objective.target}</b>
                     </li>
-                  ))}
+                  ) : (
+                    <li>Pure survival — survive as long as you can</li>
+                  )}
                 </ul>
               </div>
               <div className="mode-side">

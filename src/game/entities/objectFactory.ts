@@ -716,8 +716,9 @@ export function buildBoss(): Built {
   plate.rotation.x = Math.PI / 2.3;
   group.add(plate);
   const hornMat = new THREE.MeshStandardMaterial({ color: 0xffe6b0, metalness: 0.6, roughness: 0.35 });
+  const hornGeo = new THREE.ConeGeometry(0.2, 0.9, 8);
   for (const side of [-1, 1]) {
-    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.9, 8), hornMat);
+    const horn = new THREE.Mesh(hornGeo, hornMat);
     horn.position.set(0.62 * side, 0.9, 0);
     horn.rotation.z = -0.5 * side;
     group.add(horn);
@@ -735,7 +736,7 @@ export function buildBoss(): Built {
     group.add(eye);
   }
   const glow = sprite(group, '#ff2d55', 5, 0.5);
-  track(group, bodyMat, plateMat, hornMat, eyeMat, body.geometry, plate.geometry, horn.geometry);
+  track(group, bodyMat, plateMat, hornMat, eyeMat, body.geometry, plate.geometry, hornGeo);
   return {
     group,
     radius: 1.15,

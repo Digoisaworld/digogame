@@ -1,4 +1,4 @@
-import type { ModeId, RewardKind, RunResult, WorldId } from './types';
+import type { ModeId, RunResult, WorldId } from './types';
 import { WORLDS } from './worlds';
 
 /* ------------------------------------------------------------------ *
