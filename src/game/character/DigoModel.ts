@@ -269,7 +269,6 @@ export class DigoModel {
       this.flash = 1;
     }
     if (anim === 'victory') this.spin = 0;
-    this.anim = anim;
   }
 
   setAura(intensity: number, color?: string): void {
@@ -290,7 +289,6 @@ export class DigoModel {
   }
 
   update(dt: number, anim: DigoAnim, ctx: DigoAnimContext): void {
-    this.anim = anim;
     this.time += dt;
     this.pop = Math.max(0, this.pop - dt * 4.2);
     this.shake = Math.max(0, this.shake - dt * 2.4);

@@ -5,6 +5,8 @@
  * interface never depends on emoji fonts or external icon packages.
  */
 
+import type { ReactElement } from 'react';
+
 export type IconName =
   | 'play'
   | 'pause'
