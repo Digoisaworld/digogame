@@ -1,570 +1,817 @@
 import * as THREE from 'three';
-import { DigoCharacter } from './entities/DigoCharacter';
-import { SpawnManager } from './systems/SpawnManager';
-import { CollisionSystem } from './systems/CollisionSystem';
-import { ScoreSystem } from './systems/ScoreSystem';
-import { HealthSystem } from './systems/HealthSystem';
-import { PowerUpSystem } from './systems/PowerUpSystem';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { DigoModel, type DigoAnim } from './character/DigoModel';
+import { ParticleSystem } from './render/ParticleSystem';
+import { buildWorldVisual, worldById, type WorldVisual } from './worlds';
+import { createObjectVisual, OBJECT_RADIUS, type ObjectVisual } from './entities/objectFactory';
 import { InputController } from './systems/InputController';
 import { AudioManager } from './audio/AudioManager';
-import { buildWorldVisual, WORLD_MAP, type WorldVisual } from './worlds';
-import { MODE_MAP } from './modes';
-import { stageDef } from './progression';
+import { goalLabel, starsFor } from './levels';
 import {
   DANGER_DAMAGE,
-  OBJECT_META,
-  REWARD_COINS,
+  PLAYER,
+  POWER_DURATION,
+  REWARD_DIGO,
+  REWARD_POINTS,
+  type Category,
+  type DangerKind,
   type FallingKind,
   type GameEvent,
   type HudState,
+  type PowerKind,
+  type RewardKind,
   type RunConfig,
   type RunResult,
 } from './types';
 
+interface Falling {
+  kind: FallingKind;
+  category: Category;
+  visual: ObjectVisual;
+  x: number;
+  y: number;
+  z: number;
+  speed: number;
+  radius: number;
+  phase: number;
+}
+
+const REWARD_WEIGHT: Record<RewardKind, number> = { coin: 6, gem: 3, crate: 1.6, relic: 0.5 };
+const DANGER_WEIGHT: Record<DangerKind, number> = { bomb: 4, mine: 2.4, barrel: 2, meteor: 1.4 };
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /**
- * DigoGame — the run orchestrator.
+ * The game engine.
  *
- * Owns the renderer, camera framing, DIGO, the spawn/collision/score/health/
- * power-up systems and the audio manager, and reports HUD/state changes to the
- * React layer through a single event callback. Nothing here touches React.
+ * Owns the Three.js renderer (ACES tone mapping, soft shadows, PMREM
+ * environment reflections, bloom), the DIGO character rig, the world, the
+ * falling-object pool and the level rules. React only draws the HUD and sends
+ * input events, so gameplay stays frame-rate independent and testable.
  */
 export class DigoGame {
-  readonly input = new InputController();
-
   private readonly container: HTMLElement;
+  private readonly config: RunConfig;
   private readonly emit: (event: GameEvent) => void;
-  private cfg: RunConfig;
 
-  private renderer: THREE.WebGLRenderer;
-  private scene = new THREE.Scene();
-  private camera: THREE.PerspectiveCamera;
-  private world: WorldVisual;
-  private character: DigoCharacter;
-  private spawn: SpawnManager;
-  private readonly collisions = new CollisionSystem();
-  private readonly score = new ScoreSystem();
-  private health: HealthSystem;
-  private readonly power = new PowerUpSystem();
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly scene = new THREE.Scene();
+  private readonly camera: THREE.PerspectiveCamera;
+  private readonly composer: EffectComposer | null = null;
+  private readonly world: WorldVisual;
+  private readonly digo: DigoModel;
+  private readonly particles = new ParticleSystem();
+  private readonly input: InputController;
   private readonly audio = new AudioManager();
+  private readonly clock = new THREE.Clock();
+  private readonly rng: () => number;
+  private readonly envTexture: THREE.Texture | null;
 
-  private status: 'running' | 'paused' | 'over' = 'running';
-  private elapsed = 0;
-  private clock = 0;
-  private playerX = 0;
-  private playerVX = 0;
-  private readonly playHalf = 2.5;
-  private raf = 0;
-  private lastFrame = 0;
+  private readonly objects: Falling[] = [];
+  private readonly pool = new Map<FallingKind, ObjectVisual[]>();
+
+  private state: 'running' | 'paused' | 'over' = 'running';
+  private rafId = 0;
+  private disposed = false;
+  private animTime = 0;
   private hudTimer = 0;
   private shake = 0;
+
+  private score = 0;
+  private digoCount = 0;
+  private combo = 0;
+  private maxCombo = 0;
+  private comboTimer = 0;
   private hits = 0;
-  private runCoins = 0;
-  private milestone = 0;
-  private bossAnnounced = false;
-  private readonly warned = new WeakSet<object>();
-  private disposed = false;
-  private resizeObserver: ResizeObserver | null = null;
-  private readonly cameraTarget = new THREE.Vector3(0, 0.6, 0);
-  private baseCameraZ = 14;
+  private dodged = 0;
+  private health: number = PLAYER.health;
+  private elapsed = 0;
+  private invuln = 0;
+  private readonly powers = new Map<PowerKind, number>();
+  private readonly collected: Record<RewardKind, number> = { coin: 0, gem: 0, crate: 0, relic: 0 };
 
-  private readonly onVisibility = () => {
-    if (document.hidden && this.status === 'running') this.pause();
-  };
+  private playerX = 0;
+  private facing = 1;
+  private jumpY = 0;
+  private jumpVel = 0;
+  private grounded = true;
 
-  constructor(container: HTMLElement, cfg: RunConfig, emit: (event: GameEvent) => void) {
+  private spawnTimer = 1.1;
+  private powerTimer = 12;
+  private result: RunResult | null = null;
+  private resultSent = false;
+  private endTimer = 0;
+
+  private readonly resizeObserver: ResizeObserver | null;
+
+  constructor(container: HTMLElement, config: RunConfig, onEvent: (event: GameEvent) => void) {
     this.container = container;
-    this.emit = emit;
-    this.cfg = cfg;
-    const mode = MODE_MAP[cfg.mode];
-    const world = WORLD_MAP[cfg.world];
+    this.config = config;
+    this.emit = onEvent;
+    this.rng = mulberry32(config.seed || Date.now());
+
+    const quality = config.quality;
+    const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1;
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: cfg.quality !== 'low',
-      alpha: false,
+      antialias: quality === 'high',
       powerPreference: 'high-performance',
-      stencil: false,
     });
-    this.renderer.setClearColor(new THREE.Color(world.skyBottom), 1);
+    this.renderer.setPixelRatio(Math.min(dpr, quality === 'high' ? 2 : quality === 'medium' ? 1.6 : 1));
+    this.renderer.shadowMap.enabled = quality !== 'low';
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.container.appendChild(this.renderer.domElement);
-    this.renderer.domElement.style.display = 'block';
+    this.renderer.toneMappingExposure = 1.04;
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
+    this.renderer.domElement.style.display = 'block';
     this.renderer.domElement.style.touchAction = 'none';
+    this.renderer.domElement.setAttribute('aria-label', 'DIGO game view');
+    container.appendChild(this.renderer.domElement);
 
-    this.scene.fog = new THREE.FogExp2(new THREE.Color(world.fog).getHex(), world.fogDensity);
-    this.camera = new THREE.PerspectiveCamera(52, 9 / 16, 0.1, 200);
+    this.camera = new THREE.PerspectiveCamera(46, 1, 0.1, 260);
+    this.camera.position.set(0, 3.9, 15.6);
+    this.camera.lookAt(0, 4.2, 0);
 
-    // Lighting: warm key + cool rim + world-tinted fill.
-    const hemi = new THREE.HemisphereLight(
-      new THREE.Color(world.accent).getHex(),
-      new THREE.Color(world.ground).getHex(),
-      1.15,
-    );
-    this.scene.add(hemi);
-    const key = new THREE.DirectionalLight(0xffffff, 2.1);
-    key.position.set(3.5, 8, 7);
-    this.scene.add(key);
-    const rim = new THREE.DirectionalLight(new THREE.Color(world.accent2).getHex(), 1.35);
-    rim.position.set(-4, 3, 5);
-    this.scene.add(rim);
+    const world = worldById(config.level.world);
+    this.scene.fog = new THREE.FogExp2(world.fog, world.fogDensity);
 
-    this.world = buildWorldVisual(world);
+    // Physically based image lighting for metal/glass reflections.
+    let envTexture: THREE.Texture | null = null;
+    if (quality !== 'low') {
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      envTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      this.scene.environment = envTexture;
+      this.scene.environmentIntensity = 0.5;
+      pmrem.dispose();
+    }
+    this.envTexture = envTexture;
+
+    this.world = buildWorldVisual(world, quality);
     this.scene.add(this.world.group);
 
-    this.character = new DigoCharacter(cfg.stage);
-    this.character.group.position.set(0, this.character.baseY, 0.55);
-    this.scene.add(this.character.group);
-
-    this.spawn = new SpawnManager(this.scene, cfg.world, cfg.mode, cfg.seed);
-    this.health = new HealthSystem(mode.lives);
-    if (mode.bossAtStart) {
-      this.spawn.spawnBoss();
-      this.bossAnnounced = true;
+    const sun = this.world.sun;
+    sun.castShadow = quality !== 'low';
+    if (sun.castShadow) {
+      sun.shadow.mapSize.set(quality === 'high' ? 2048 : 1024, quality === 'high' ? 2048 : 1024);
+      sun.shadow.camera.left = -10;
+      sun.shadow.camera.right = 10;
+      sun.shadow.camera.top = 13;
+      sun.shadow.camera.bottom = -4;
+      sun.shadow.camera.near = 0.5;
+      sun.shadow.camera.far = 48;
+      sun.shadow.bias = -0.0009;
+      sun.shadow.normalBias = 0.022;
+      sun.shadow.camera.updateProjectionMatrix();
     }
 
-    this.audio.setVolumes(cfg.musicVolume, cfg.sfxVolume);
-    this.audio.startMusic(world);
-    this.audio.play('ui');
+    this.digo = new DigoModel();
+    this.digo.root.position.set(0, 0, 0);
+    this.scene.add(this.digo.root);
 
-    this.resize();
+    this.scene.add(this.particles.points);
+
+    this.input = new InputController({
+      drag: config.controlMode !== 'buttons',
+      buttons: config.controlMode !== 'drag',
+    });
+
+    this.audio.setVolumes(config.musicVolume, config.sfxVolume);
+
+    if (quality !== 'low') {
+      this.composer = new EffectComposer(this.renderer);
+      this.composer.addPass(new RenderPass(this.scene, this.camera));
+      const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.55, 0.8, 0.82);
+      this.composer.addPass(bloom);
+      this.composer.addPass(new OutputPass());
+    }
+
     this.resizeObserver =
       typeof ResizeObserver !== 'undefined'
         ? new ResizeObserver(() => this.resize())
         : null;
     this.resizeObserver?.observe(container);
-    window.addEventListener('resize', this.resize);
-    window.addEventListener('orientationchange', this.resize);
-    document.addEventListener('visibilitychange', this.onVisibility);
+    this.resize();
 
+    this.loop = this.loop.bind(this);
+    this.rafId = requestAnimationFrame(this.loop);
+    this.emit({ type: 'hud', hud: this.hud() });
     this.emit({ type: 'ready' });
-    this.emitHud(true);
-    this.lastFrame = performance.now();
-    this.raf = requestAnimationFrame(this.loop);
   }
 
-  /* ---------------------------------------------------------------- */
-  /* Public API                                                        */
-  /* ---------------------------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* public api                                                          */
+  /* ------------------------------------------------------------------ */
 
-  attachPad(el: HTMLElement): void {
-    this.input.attach(el);
+  attachPad(el: HTMLElement | null): void {
+    this.input.attachPad(el);
   }
 
-  setButton(dir: 'left' | 'right', pressed: boolean): void {
-    this.input.setButton(dir, pressed);
+  setDirection(dir: number): void {
+    this.input.setDirection(dir);
   }
 
-  pause(): void {
-    if (this.status !== 'running') return;
-    this.status = 'paused';
-    this.input.setEnabled(false);
-    this.emitHud(true);
-  }
-
-  resume(): void {
-    if (this.status !== 'paused') return;
-    this.status = 'running';
-    this.input.setEnabled(true);
-    this.lastFrame = performance.now();
-    this.emitHud(true);
-  }
-
-  togglePause(): void {
-    if (this.status === 'running') this.pause();
-    else if (this.status === 'paused') this.resume();
+  jump(): void {
+    this.input.requestJump();
   }
 
   setVolumes(music: number, sfx: number): void {
-    this.cfg = { ...this.cfg, musicVolume: music, sfxVolume: sfx };
     this.audio.setVolumes(music, sfx);
   }
 
-  get currentStatus(): 'running' | 'paused' | 'over' {
-    return this.status;
+  /** Called from a user gesture so the audio context can unlock. */
+  startAudio(): void {
+    this.audio.unlock();
+    this.audio.startMusic(worldById(this.config.level.world));
   }
 
-  dispose(): void {
+  pause(): void {
+    if (this.state === 'over') return;
+    this.state = 'paused';
+    this.audio.stopMusic();
+    this.emit({ type: 'hud', hud: this.hud() });
+  }
+
+  resume(): void {
+    if (this.state === 'over') return;
+    this.state = 'running';
+    this.clock.getDelta();
+    this.audio.startMusic(worldById(this.config.level.world));
+    this.emit({ type: 'hud', hud: this.hud() });
+  }
+
+  destroy(): void {
     if (this.disposed) return;
     this.disposed = true;
-    cancelAnimationFrame(this.raf);
-    this.input.detach();
+    cancelAnimationFrame(this.rafId);
     this.resizeObserver?.disconnect();
-    window.removeEventListener('resize', this.resize);
-    window.removeEventListener('orientationchange', this.resize);
-    document.removeEventListener('visibilitychange', this.onVisibility);
-    this.spawn.dispose();
-    this.character.dispose();
-    this.world.dispose();
+    this.input.dispose();
     this.audio.dispose();
-    this.scene.clear();
-    const canvas = this.renderer.domElement;
+    for (const list of this.pool.values()) list.length = 0;
+    this.objects.length = 0;
+    this.scene.remove(this.world.group);
+    this.world.dispose();
+    this.scene.remove(this.digo.root);
+    this.digo.dispose();
+    this.scene.remove(this.particles.points);
+    this.particles.dispose();
+    this.composer?.dispose();
+    this.envTexture?.dispose();
     this.renderer.dispose();
-    canvas.remove();
+    if (this.renderer.domElement.parentElement === this.container) {
+      this.container.removeChild(this.renderer.domElement);
+    }
   }
 
-  /* ---------------------------------------------------------------- */
-  /* Loop                                                              */
-  /* ---------------------------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* frame                                                               */
+  /* ------------------------------------------------------------------ */
 
-  private loop = (now: number): void => {
+  private resize(): void {
+    const w = this.container.clientWidth || window.innerWidth;
+    const h = this.container.clientHeight || window.innerHeight;
+    if (w <= 0 || h <= 0) return;
+    this.camera.aspect = w / h;
+    // Keep the full lane visible on tall phones.
+    this.camera.fov = this.camera.aspect < 0.75 ? 56 : this.camera.aspect < 1 ? 50 : 46;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(w, h, false);
+    this.composer?.setSize(w, h);
+  }
+
+  private loop(): void {
     if (this.disposed) return;
-    this.raf = requestAnimationFrame(this.loop);
-    const rawDt = (now - this.lastFrame) / 1000;
-    this.lastFrame = now;
-    const dt = Math.min(0.05, Math.max(0, rawDt));
+    this.rafId = requestAnimationFrame(this.loop);
+    const dt = Math.min(0.05, this.clock.getDelta());
 
-    if (this.status === 'running') {
-      this.step(dt);
-    } else {
-      // Keep the world alive behind menus without advancing gameplay.
-      this.clock += dt * 0.35;
-      this.world.update(this.clock, dt);
-      this.character.update(dt * 0.4);
-    }
+    if (this.state === 'running' && !this.result) this.step(dt);
+    else if (this.result) this.finishStep(dt);
+    else this.idleStep(dt);
 
-    this.shake = Math.max(0, this.shake - dt * 2.6);
-    const sx = this.shake > 0 ? (Math.random() - 0.5) * this.shake * 0.9 : 0;
-    const sy = this.shake > 0 ? (Math.random() - 0.5) * this.shake * 0.9 : 0;
-    this.camera.position.set(sx, this.cameraTarget.y + 0.15 + sy, this.baseCameraZ);
-    this.camera.lookAt(this.cameraTarget);
+    if (this.composer) this.composer.render();
+    else this.renderer.render(this.scene, this.camera);
+  }
 
-    this.renderer.render(this.scene, this.camera);
-  };
+  private idleStep(dt: number): void {
+    this.animTime += dt * 0.35;
+    this.world.update(dt, this.animTime);
+    this.particles.update(dt);
+    this.digo.update(dt, 'idle', { dir: 0, speed: 0, grounded: true });
+  }
 
   private step(dt: number): void {
     this.elapsed += dt;
-    this.clock += dt;
-    const mode = MODE_MAP[this.cfg.mode];
-    const stage = stageDef(this.cfg.stage);
+    this.animTime += dt;
+    const level = this.config.level;
 
-    /* --- player movement: smooth follow of the finger target ---------- */
-    const target = this.input.sample() * this.playHalf;
-    const prevX = this.playerX;
-    const follow = 1 - Math.exp(-(13 + stage.index) * dt);
-    this.playerX += (target - this.playerX) * follow;
-    this.playerX = Math.max(-this.playHalf, Math.min(this.playHalf, this.playerX));
-    this.playerVX = dt > 0 ? (this.playerX - prevX) / dt : 0;
-    const speedFactor = this.power.speedMultiplier;
-    this.character.group.position.x = this.playerX;
-    this.character.group.position.y =
-      this.character.baseY + Math.sin(this.clock * 6) * 0.02 + (this.power.magnet ? 0.06 : 0);
-    this.character.setVelocityX(this.playerVX * speedFactor);
-    this.character.setMoving(Math.abs(this.playerVX) > 0.35 || this.input.active);
-    if (Math.abs(this.playerVX) > 0.4) this.character.setFacing(Math.sign(this.playerVX));
-    if (this.input.isDragging) {
-      const anim = this.playerVX < -0.5 ? 'left' : this.playerVX > 0.5 ? 'right' : 'run';
-      this.character.play(anim);
-    } else if (this.input.active) {
-      this.character.play('run');
-    } else {
-      this.character.play('idle');
+    this.updatePlayer(dt);
+    this.updateObjects(dt);
+    this.updatePowers(dt);
+    this.updateSpawning(dt);
+    this.updateCamera(dt);
+
+    this.world.update(dt, this.animTime);
+    this.particles.update(dt);
+
+    if (this.invuln > 0) {
+      this.invuln = Math.max(0, this.invuln - dt);
+      this.digo.setTint('#ff4d4d', this.invuln > 0 ? 0.45 : 0);
     }
-    this.character.update(dt);
+    if (this.comboTimer > 0) {
+      this.comboTimer -= dt;
+      if (this.comboTimer <= 0) this.combo = 0;
+    }
 
-    /* --- systems ----------------------------------------------------- */
-    this.score.update(dt);
-    this.health.update(dt);
-    this.power.update(dt);
-    this.spawn.setElapsed(this.elapsed);
+    // Goal / timeout resolution
+    if (this.goalProgress() >= level.goal.target) {
+      this.finish(true, 'Objective complete');
+    } else if (this.elapsed >= level.timeLimit) {
+      this.finish(false, 'Time ran out');
+    }
 
-    this.spawn.update(dt, {
-      playerX: this.playerX,
-      playerY: this.character.baseY,
-      magnetActive: this.power.magnet,
-      slowFactor: this.power.slowFactor,
-      elapsed: this.elapsed,
-      difficulty: Math.min(1, this.elapsed / 110),
+    this.hudTimer += dt;
+    if (this.hudTimer >= 0.1) {
+      this.hudTimer = 0;
+      this.emit({ type: 'hud', hud: this.hud() });
+    }
+  }
+
+  private finishStep(dt: number): void {
+    this.animTime += dt;
+    this.world.update(dt, this.animTime);
+    this.particles.update(dt);
+    this.updateCamera(dt);
+    this.digo.update(dt, this.result?.victory ? 'victory' : 'defeat', {
+      dir: 0,
+      speed: 0,
+      grounded: true,
+    });
+    if (!this.resultSent) {
+      this.endTimer -= dt;
+      if (this.endTimer <= 0) {
+        this.resultSent = true;
+        this.emit({ type: 'over', result: this.result as RunResult });
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* player                                                             */
+  /* ------------------------------------------------------------------ */
+
+  private updatePlayer(dt: number): void {
+    const target = this.input.targetX;
+    let dir = 0;
+
+    if (target !== null) {
+      const delta = target - this.playerX;
+      this.playerX += delta * Math.min(1, dt * 16);
+      dir = Math.abs(delta) > 0.02 ? Math.sign(delta) : 0;
+    } else {
+      dir = this.input.direction;
+      this.playerX += dir * PLAYER.speed * dt;
+    }
+
+    this.playerX = clamp(this.playerX, -PLAYER.lane, PLAYER.lane);
+    if (dir !== 0) this.facing = dir;
+
+    if (this.input.consumeJump() && this.grounded) {
+      this.jumpVel = PLAYER.jumpVelocity;
+      this.grounded = false;
+      this.audio.play('dodge');
+      this.particles.burst(new THREE.Vector3(this.playerX, 0.08, 0), {
+        count: 10,
+        color: '#ffffff',
+        color2: this.config.level.world === 'lava' ? '#ff8a00' : '#cfe6ff',
+        speed: 1.4,
+        spread: 0.9,
+        size: 0.5,
+        life: 0.5,
+        gravity: 1.5,
+        direction: 'up',
+      });
+    }
+
+    if (!this.grounded) {
+      this.jumpVel -= PLAYER.gravity * dt;
+      this.jumpY += this.jumpVel * dt;
+      if (this.jumpY <= 0) {
+        this.jumpY = 0;
+        this.jumpVel = 0;
+        this.grounded = true;
+      }
+    }
+
+    this.digo.root.position.set(this.playerX, this.jumpY, 0);
+    this.digo.root.rotation.y = lerp(this.digo.root.rotation.y, this.facing * 0.28, Math.min(1, dt * 8));
+
+    let anim: DigoAnim = 'idle';
+    if (!this.grounded) anim = this.jumpVel > 0 ? 'jump' : 'fall';
+    else if (Math.abs(dir) > 0.05) anim = 'run';
+
+    this.digo.update(dt, anim, {
+      dir,
+      speed: Math.min(1, Math.abs(dir)),
+      grounded: this.grounded,
+    });
+    this.digo.setAura(this.powers.has('invincible') ? 1 : this.powers.has('shield') ? 0.55 : 0);
+  }
+
+  private updateCamera(dt: number): void {
+    const targetX = this.playerX * 0.18;
+    this.camera.position.x += (targetX - this.camera.position.x) * Math.min(1, dt * 4);
+    const s = this.shake;
+    this.camera.position.y = 3.9 + (Math.random() - 0.5) * s * 0.35;
+    this.camera.position.z = 15.6 + (Math.random() - 0.5) * s * 0.2;
+    this.camera.lookAt(this.playerX * 0.08, 4.15, 0);
+    this.shake = Math.max(0, this.shake - dt * 2.4);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* objects                                                            */
+  /* ------------------------------------------------------------------ */
+
+  private updateSpawning(dt: number): void {
+    const level = this.config.level;
+    const p = clamp(this.elapsed / Math.max(1, level.timeLimit), 0, 1);
+    const interval = lerp(level.spawn.interval[0], level.spawn.interval[1], p);
+
+    this.spawnTimer -= dt;
+    this.powerTimer -= dt;
+
+    if (this.spawnTimer <= 0) {
+      this.spawnOne(p);
+      this.spawnTimer = interval * (0.85 + this.rng() * 0.3);
+    }
+  }
+
+  private pickReward(): RewardKind {
+    const list = this.config.level.rewards;
+    const total = list.reduce((sum, k) => sum + REWARD_WEIGHT[k], 0);
+    let roll = this.rng() * total;
+    for (const k of list) {
+      roll -= REWARD_WEIGHT[k];
+      if (roll <= 0) return k;
+    }
+    return list[0];
+  }
+
+  private pickDanger(): DangerKind {
+    const list = this.config.level.dangers;
+    const total = list.reduce((sum, k) => sum + DANGER_WEIGHT[k], 0);
+    let roll = this.rng() * total;
+    for (const k of list) {
+      roll -= DANGER_WEIGHT[k];
+      if (roll <= 0) return k;
+    }
+    return list[0];
+  }
+
+  private spawnOne(p: number): void {
+    const level = this.config.level;
+    const dangersAlive = this.objects.filter((o) => o.category === 'danger').length;
+    const rewardsAlive = this.objects.filter((o) => o.category === 'reward').length;
+
+    let category: Category;
+    if (this.powerTimer <= 0 && level.powers.length > 0) {
+      category = 'power';
+      this.powerTimer = 14 + this.rng() * 8;
+    } else if (dangersAlive < level.spawn.maxDangers && this.rng() < level.spawn.dangerBias * (0.8 + p * 0.45)) {
+      category = 'danger';
+    } else {
+      category = 'reward';
+    }
+    // Never starve the player of rewards.
+    if (category === 'danger' && rewardsAlive === 0 && this.rng() < 0.5) category = 'reward';
+
+    let kind: FallingKind;
+    if (category === 'danger') kind = this.pickDanger();
+    else if (category === 'power') kind = level.powers[Math.floor(this.rng() * level.powers.length)];
+    else kind = this.pickReward();
+
+    const margin = 0.8;
+    let x = (this.rng() * 2 - 1) * (PLAYER.lane - margin);
+    if (category === 'danger') {
+      for (let i = 0; i < 3 && Math.abs(x - this.playerX) < 1.4; i += 1) {
+        x = (this.rng() * 2 - 1) * (PLAYER.lane - margin);
+      }
+    }
+
+    const baseSpeed = lerp(level.spawn.speed[0], level.spawn.speed[1], p);
+    const speed = baseSpeed * (0.88 + this.rng() * 0.26) * (category === 'danger' ? 1.06 : 1);
+
+    const visual = this.acquire(kind);
+    const entity: Falling = {
+      kind,
+      category,
+      visual,
+      x,
+      y: 12.6,
+      z: (this.rng() * 2 - 1) * 0.65,
+      speed,
+      radius: OBJECT_RADIUS[kind],
+      phase: this.rng() * Math.PI * 2,
+    };
+    visual.group.position.set(entity.x, entity.y, entity.z);
+    visual.group.visible = true;
+    this.objects.push(entity);
+
+    if (kind === 'bomb' || kind === 'meteor') this.audio.play('bombWarn');
+  }
+
+  private acquire(kind: FallingKind): ObjectVisual {
+    const list = this.pool.get(kind);
+    const cached = list?.pop();
+    const visual = cached ?? createObjectVisual(kind);
+    if (!list) this.pool.set(kind, []);
+    this.scene.add(visual.group);
+    return visual;
+  }
+
+  private release(entity: Falling): void {
+    this.scene.remove(entity.visual.group);
+    entity.visual.group.visible = false;
+    this.pool.get(entity.kind)?.push(entity.visual);
+  }
+
+  private updateObjects(dt: number): void {
+    const slow = this.powers.has('slow') ? 0.42 : 1;
+    const magnet = this.powers.has('magnet');
+
+    for (let i = this.objects.length - 1; i >= 0; i -= 1) {
+      const o = this.objects[i];
+      o.y -= o.speed * slow * dt;
+
+      if (magnet && o.category === 'reward') {
+        o.x += (this.playerX - o.x) * Math.min(1, dt * 3.6);
+        o.y += (this.jumpY + 0.9 - o.y) * Math.min(1, dt * 1.4);
+      }
+
+      o.visual.group.position.set(o.x, o.y, o.z);
+      o.visual.update(dt, this.animTime + o.phase);
+
+      if (this.collides(o)) {
+        this.objects.splice(i, 1);
+        this.resolve(o);
+        this.release(o);
+        continue;
+      }
+
+      if (o.y < -3.2) {
+        this.objects.splice(i, 1);
+        if (o.category === 'danger') this.dodged += 1;
+        this.release(o);
+      }
+    }
+  }
+
+  private collides(o: Falling): boolean {
+    const bottom = this.jumpY + 0.12;
+    const top = this.jumpY + 1.62;
+    if (o.y + o.radius < bottom || o.y - o.radius > top) return false;
+    const dx = Math.abs(o.x - this.playerX);
+    const reach = PLAYER.radius + o.radius + (o.category === 'reward' ? 0.22 : -0.06);
+    return dx <= reach;
+  }
+
+  private resolve(o: Falling): void {
+    const pos = new THREE.Vector3(o.x, o.y, o.z);
+
+    if (o.category === 'reward') {
+      this.collect(o.kind as RewardKind, pos);
+      return;
+    }
+    if (o.category === 'power') {
+      this.applyPower(o.kind as PowerKind, pos);
+      return;
+    }
+    this.damage(o.kind as DangerKind, pos);
+  }
+
+  private collect(kind: RewardKind, pos: THREE.Vector3): void {
+    this.combo += 1;
+    this.maxCombo = Math.max(this.maxCombo, this.combo);
+    this.comboTimer = 3.4;
+
+    const mult = this.multiplier();
+    const gain = Math.round(REWARD_POINTS[kind] * mult * (this.powers.has('double') ? 2 : 1));
+    this.score += gain;
+    this.digoCount += REWARD_DIGO[kind];
+    this.collected[kind] += 1;
+
+    const color = kind === 'gem' ? '#5fd8ff' : kind === 'relic' ? '#c084fc' : '#ffcf4d';
+    this.particles.burst(pos, {
+      count: kind === 'relic' ? 46 : kind === 'coin' ? 14 : 24,
+      color,
+      color2: '#ffffff',
+      speed: 3.2,
+      spread: 1,
+      size: 0.85,
+      life: 0.7,
+      gravity: -1.2,
     });
 
-    // Bomb warning cue (once per bomb, before it reaches the player).
-    for (const e of this.spawn.active) {
-      if (e.kind === 'bomb' && !this.warned.has(e) && e.y < 5.4 && e.y > 2) {
-        this.warned.add(e);
-        this.audio.play('bombWarn');
-      }
-    }
-
-    if (this.spawn.boss && !this.bossAnnounced) {
-      this.bossAnnounced = true;
-      this.audio.play('boss');
-      this.emit({ type: 'toast', text: `${this.spawn.boss.name} APPEARS`, tone: 'bad' });
-    }
-    if (!this.spawn.boss) this.bossAnnounced = false;
-
-    /* --- collisions --------------------------------------------------- */
-    this.collisions.update(
-      this.playerX,
-      this.character.baseY,
-      this.spawn.active,
-      this.spawn.boss?.entity ?? null,
-      {
-        onReward: (e) => this.collect(e.kind, e),
-        onPower: (e) => this.grabPower(e.kind as never, e),
-        onDanger: (e) => this.hitDanger(e.kind, e),
-        onBossTouch: () => {
-          if (this.power.invincible) return;
-          const result = this.health.damage(22);
-          this.onDamaged(result, 'guardian');
-        },
-      },
+    this.digo.react('collect');
+    this.audio.play(
+      kind === 'coin' ? 'coin' : kind === 'gem' ? 'diamond' : kind === 'relic' ? 'legendary' : 'chest',
     );
-
-    /* --- milestones & objectives -------------------------------------- */
-    const nextMilestone = Math.floor(this.elapsed / 30);
-    if (nextMilestone > this.milestone) {
-      this.milestone = nextMilestone;
-      this.score.addBonus(60 * nextMilestone);
-      this.emit({ type: 'toast', text: `${nextMilestone * 30}s SURVIVED  +${60 * nextMilestone}`, tone: 'good' });
-      this.audio.play('levelup');
-    }
-
-    const objective = mode.objective;
-    let objectiveMet = false;
-    if (objective) {
-      const progress = this.objectiveProgress(objective.metric);
-      objectiveMet = progress >= objective.target;
-      if (objectiveMet && mode.id === 'mission') {
-        this.endRun(true, 'Mission complete');
-        return;
-      }
-    }
-    if (mode.duration !== null && this.elapsed >= mode.duration) {
-      this.endRun(objective ? objectiveMet : true, 'Time up');
-      return;
-    }
-    if (mode.id === 'boss' && this.spawn.bossesDefeated >= 3) {
-      this.endRun(true, 'All guardians defeated');
-      return;
-    }
-
-    /* --- world + HUD --------------------------------------------------- */
-    this.world.update(this.clock, dt);
-    this.hudTimer += dt;
-    if (this.hudTimer > 0.1) {
-      this.hudTimer = 0;
-      this.emitHud();
-    }
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Gameplay events                                                   */
-  /* ---------------------------------------------------------------- */
-
-  private collect(kind: FallingKind, entity: { alive: boolean }): void {
-    this.spawn.consume(entity as never);
-    const stage = stageDef(this.cfg.stage);
-    const stageBonus = 1 + (stage.index - 1) * 0.08;
-    this.score.addReward(kind as never, this.power.doublePoints, stageBonus);
-    this.runCoins += REWARD_COINS[kind as never] ?? 0;
-    const meta = OBJECT_META[kind];
-    switch (kind) {
-      case 'coin':
-        this.audio.play('coin');
-        break;
-      case 'diamond':
-        this.audio.play('diamond');
-        break;
-      case 'energy':
-        this.audio.play('energy');
-        break;
-      case 'chest':
-        this.audio.play('chest');
-        this.character.play('jump');
-        this.emit({ type: 'toast', text: 'TREASURE CHEST!', tone: 'good' });
-        break;
-      case 'legendary':
-        this.audio.play('legendary');
-        this.character.play('jump');
-        this.shake = 0.25;
-        this.emit({ type: 'toast', text: 'LEGENDARY RELIC!', tone: 'good' });
-        break;
-      default:
-        this.audio.play('coin');
-    }
-    this.character.play('collect');
-    if (this.power.magnet) this.emit({ type: 'toast', text: `MAGNET  ${meta.label}`, tone: 'info' });
-    if (kind === 'legendary' || kind === 'chest' || kind === 'diamond') {
-      const dmg = kind === 'legendary' ? 2 : 1;
-      if (this.spawn.boss) {
-        const killed = this.spawn.damageBoss(dmg);
-        this.shake = killed ? 0.7 : 0.35;
-        this.audio.play(killed ? 'explosion' : 'boss');
-        this.emit({
-          type: 'toast',
-          text: killed ? 'GUARDIAN DESTROYED  +500' : 'GUARDIAN HIT',
-          tone: 'good',
-        });
-        if (killed) this.score.addBonus(500);
-      }
-    }
-    if (this.cfg.haptics && navigator.vibrate) navigator.vibrate(8);
-  }
-
-  private grabPower(kind: FallingKind, entity: { alive: boolean }): void {
-    this.spawn.consume(entity as never);
-    this.power.activate(kind as never);
-    this.audio.play('powerup');
-    this.character.play('collect');
-    const meta = OBJECT_META[kind];
-    this.emit({ type: 'toast', text: `${meta.label.toUpperCase()} ACTIVE`, tone: 'good' });
-    if (this.cfg.haptics && navigator.vibrate) navigator.vibrate(14);
-  }
-
-  private hitDanger(kind: FallingKind, entity: { alive: boolean }): void {
-    if (this.power.invincible) return;
-    if (this.power.consumeShield()) {
-      this.spawn.consume(entity as never);
-      this.audio.play('dodge');
-      this.emit({ type: 'toast', text: 'SHIELD ABSORBED THE HIT', tone: 'info' });
+    if (kind === 'relic') {
       this.shake = 0.25;
-      return;
+      this.emit({ type: 'toast', text: `DIGO Relic  +${gain}`, tone: 'good' });
     }
-    this.spawn.consume(entity as never);
-    const damage = DANGER_DAMAGE[kind as never] ?? 25;
-    const result = this.health.damage(damage);
-    this.onDamaged(result, kind);
   }
 
-  private onDamaged(result: string, source: string): void {
-    if (result === 'ignored') return;
+  private applyPower(kind: PowerKind, pos: THREE.Vector3): void {
+    this.powers.set(kind, POWER_DURATION[kind]);
+    this.particles.burst(pos, {
+      count: 30,
+      color: '#ffffff',
+      color2: '#7fe3ff',
+      speed: 3.4,
+      spread: 1,
+      size: 1,
+      life: 0.8,
+      gravity: -0.6,
+    });
+    this.audio.play('powerup');
+    this.emit({ type: 'toast', text: `${POWER_LABEL[kind]} active`, tone: 'info' });
+  }
+
+  private damage(kind: DangerKind, pos: THREE.Vector3): void {
+    if (this.powers.has('invincible') || this.invuln > 0) return;
+
+    if (this.powers.has('shield')) {
+      this.powers.delete('shield');
+      this.particles.burst(pos, {
+        count: 26,
+        color: '#4da3ff',
+        color2: '#ffffff',
+        speed: 4,
+        spread: 1,
+        size: 1,
+        life: 0.6,
+        gravity: 0,
+      });
+      this.audio.play('powerup');
+      this.emit({ type: 'toast', text: 'Shield absorbed the hit', tone: 'info' });
+      return;
+    }
+
+    this.health = Math.max(0, this.health - DANGER_DAMAGE[kind]);
     this.hits += 1;
-    this.character.play('damage');
-    this.shake = 0.55;
-    this.audio.play(source === 'guardian' ? 'boss' : 'explosion');
-    if (this.cfg.haptics && navigator.vibrate) navigator.vibrate([24, 40, 24]);
-    if (result === 'dead') {
-      this.endRun(false, 'DIGO ran out of lives');
-      return;
-    }
-    if (result === 'lifeLost') {
-      this.emit({ type: 'toast', text: 'LIFE LOST — DIGO RECOVERS', tone: 'bad' });
-      this.audio.play('defeat');
-    } else {
-      this.emit({ type: 'toast', text: 'DAMAGE TAKEN', tone: 'bad' });
-    }
-    this.emitHud(true);
+    this.combo = 0;
+    this.comboTimer = 0;
+    this.invuln = PLAYER.invulnTime;
+    this.shake = 0.62;
+
+    this.particles.burst(pos, {
+      count: 44,
+      color: '#ff7a18',
+      color2: '#ff2d1a',
+      speed: 5.5,
+      spread: 1,
+      size: 1.5,
+      life: 0.8,
+      gravity: 2.4,
+    });
+    this.digo.react('hurt');
+    this.audio.play('explosion');
+    this.emit({ type: 'toast', text: `-${DANGER_DAMAGE[kind]} HP`, tone: 'bad' });
+
+    if (this.health <= 0) this.finish(false, 'DIGO ran out of health');
   }
 
-  private objectiveProgress(metric: string): number {
-    switch (metric) {
-      case 'coins':
-        return this.score.snapshot().coin;
-      case 'diamonds':
-        return this.score.snapshot().diamond;
-      case 'score':
-        return this.score.score;
-      case 'time':
-        return Math.floor(this.elapsed);
-      case 'boss':
-        return this.spawn.bossesDefeated;
-      case 'hits':
-        return this.hits;
-      default:
-        return 0;
+  private updatePowers(dt: number): void {
+    for (const [kind, remaining] of [...this.powers.entries()]) {
+      const next = remaining - dt;
+      if (next <= 0) this.powers.delete(kind);
+      else this.powers.set(kind, next);
     }
   }
 
-  /* ---------------------------------------------------------------- */
-  /* HUD / end of run                                                  */
-  /* ---------------------------------------------------------------- */
+  /* ------------------------------------------------------------------ */
+  /* rules                                                              */
+  /* ------------------------------------------------------------------ */
 
-  private emitHud(force = false): void {
-    if (this.status === 'over' && !force) return;
-    const mode = MODE_MAP[this.cfg.mode];
-    const objective = mode.objective
-      ? {
-          label: mode.objective.label,
-          progress: Math.min(mode.objective.target, this.objectiveProgress(mode.objective.metric)),
-          target: mode.objective.target,
-        }
-      : null;
-    const hud: HudState = {
-      status: this.status,
-      score: this.score.score,
-      combo: this.score.combo,
-      multiplier: this.score.multiplier,
-      health: this.health.health,
-      maxHealth: this.health.maxHealth,
-      lives: this.health.lives,
-      maxLives: this.health.maxLives,
-      level: 1 + Math.floor(this.score.score / 400),
-      time:
-        mode.duration !== null
-          ? Math.max(0, mode.duration - this.elapsed)
-          : Math.floor(this.elapsed),
-      world: this.cfg.world,
-      mode: this.cfg.mode,
-      stage: this.cfg.stage,
-      powerups: this.power.list(),
-      boss: this.spawn.boss
-        ? {
-            hp: Math.max(0, this.spawn.boss.hp),
-            max: this.spawn.boss.maxHp,
-            name: this.spawn.boss.name,
-          }
-        : null,
-      objective,
-      coins: this.runCoins,
-      shield: this.power.has('shield'),
-    };
-    this.emit({ type: 'hud', hud });
+  private multiplier(): number {
+    return Math.min(4, 1 + Math.floor(this.combo / 5) * 0.5);
   }
 
-  private endRun(victory: boolean, reason: string): void {
-    if (this.status === 'over') return;
-    this.status = 'over';
-    this.input.setEnabled(false);
-    this.audio.play(victory ? 'victory' : 'defeat');
-    if (victory) this.character.play('victory');
-    else this.character.play('defeat');
-    if (this.cfg.haptics && navigator.vibrate) navigator.vibrate(victory ? [30, 60, 30] : 120);
+  private goalProgress(): number {
+    const goal = this.config.level.goal;
+    if (goal.kind === 'collect') return this.digoCount;
+    if (goal.kind === 'survive') return this.elapsed;
+    return this.score;
+  }
 
-    const result: RunResult = {
-      world: this.cfg.world,
-      mode: this.cfg.mode,
-      stage: this.cfg.stage,
-      score: this.score.score,
-      coins: this.runCoins,
-      xp: this.score.xp,
-      elapsed: Math.round(this.elapsed * 10) / 10,
-      collected: this.score.snapshot(),
+  private finish(victory: boolean, reason: string): void {
+    if (this.result) return;
+    const level = this.config.level;
+    const bonus = victory ? level.bonus : 0;
+    const score = Math.round(this.score);
+
+    this.result = {
+      level: level.id,
+      world: level.world,
+      score,
+      digo: this.digoCount,
+      bonus,
+      total: score + bonus,
+      elapsed: Math.round(this.elapsed),
+      collected: { ...this.collected },
       hits: this.hits,
-      dodged: this.spawn.dodged,
-      maxCombo: this.score.maxCombo,
+      dodged: this.dodged,
+      maxCombo: this.maxCombo,
       victory,
-      bossDefeated: this.spawn.bossesDefeated,
-      powerupsUsed: this.power.used,
+      stars: victory ? starsFor(level, score) : 0,
       reason,
     };
-    this.emitHud(true);
-    this.emit({ type: 'over', result });
+    this.endTimer = 1.5;
+
+    if (victory) {
+      this.digo.react('victory');
+      this.audio.play('victory');
+      for (let i = 0; i < 3; i += 1) {
+        this.particles.burst(
+          new THREE.Vector3((this.rng() * 2 - 1) * 3, 3 + this.rng() * 3, 1.5),
+          {
+            count: 40,
+            color: ['#ffcf4d', '#5fd8ff', '#c084fc'][i % 3],
+            color2: '#ffffff',
+            speed: 5,
+            spread: 1,
+            size: 1.2,
+            life: 1.8,
+            gravity: 3.2,
+          },
+        );
+      }
+      this.emit({ type: 'toast', text: `Level ${level.id} complete  +${bonus} bonus`, tone: 'good' });
+    } else {
+      this.digo.react('defeat');
+      this.audio.play('defeat');
+    }
+    this.emit({ type: 'hud', hud: this.hud() });
   }
 
-  /* ---------------------------------------------------------------- */
-  /* Layout                                                            */
-  /* ---------------------------------------------------------------- */
-
-  private resize = (): void => {
-    if (this.disposed) return;
-    const w = Math.max(1, this.container.clientWidth);
-    const h = Math.max(1, this.container.clientHeight);
-    const quality = this.cfg.quality;
-    const cap = quality === 'low' ? 1 : quality === 'medium' ? 1.5 : 2;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, cap));
-    this.renderer.setSize(w, h, false);
-    const aspect = w / h;
-    this.camera.aspect = aspect;
-    const halfW = 3.35;
-    const halfH = 5.6;
-    const tan = Math.tan((this.camera.fov * Math.PI) / 360);
-    const distW = halfW / (tan * aspect);
-    const distH = halfH / tan;
-    this.baseCameraZ = Math.max(distW, distH);
-    this.camera.position.set(0, this.cameraTarget.y + 0.15, this.baseCameraZ);
-    this.camera.lookAt(this.cameraTarget);
-    this.camera.updateProjectionMatrix();
-  };
+  private hud(): HudState {
+    const level = this.config.level;
+    return {
+      status: this.result ? 'over' : this.state,
+      score: Math.round(this.score),
+      digo: this.digoCount,
+      combo: this.combo,
+      multiplier: this.multiplier(),
+      health: Math.round(this.health),
+      maxHealth: PLAYER.health,
+      level: level.id,
+      levelName: level.name,
+      world: level.world,
+      time: Math.max(0, level.timeLimit - this.elapsed),
+      timeLimit: level.timeLimit,
+      goal: {
+        kind: level.goal.kind,
+        label: goalLabel(level),
+        progress: Math.round(this.goalProgress()),
+        target: level.goal.target,
+      },
+      powerups: [...this.powers.entries()].map(([kind, remaining]) => ({
+        kind,
+        remaining,
+        total: POWER_DURATION[kind],
+      })),
+      shield: this.powers.has('shield'),
+      invincible: this.powers.has('invincible'),
+      stars: starsFor(level, this.score),
+    };
+  }
 }
+
+const POWER_LABEL: Record<PowerKind, string> = {
+  shield: 'Shield',
+  magnet: 'Magnet',
+  slow: 'Slow Motion',
+  double: 'Double Points',
+  invincible: 'Invincible',
+};
