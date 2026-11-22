@@ -288,7 +288,9 @@ function goalFor(
   if (kind === 'survive') {
     goal = { kind, target: timeLimit };
   } else if (kind === 'score') {
-    goal = { kind, target: Math.max(1200, Math.round((expectedPoints * 0.45) / 50) * 50) };
+    // 45% of the theoretical payout, never below a gentle 300 so the very first
+    // levels stay winnable even though their rewards are low value.
+    goal = { kind, target: Math.max(300, Math.round((expectedPoints * 0.45) / 50) * 50) };
   } else {
     goal = { kind, target: Math.max(10, Math.round(expectedDigo * 0.45)) };
   }

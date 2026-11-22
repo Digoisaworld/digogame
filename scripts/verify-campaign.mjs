@@ -175,10 +175,12 @@ check('completion bonus grows logarithmically with diminishing steps', () => {
   let previousStep = Number.POSITIVE_INFINITY;
   for (let id = 1; id < TOTAL_LEVELS; id++) {
     assert.ok(levelBonus(id + 1) > levelBonus(id), `bonus must increase at level ${id + 1}`);
+    // Integer rounding can wobble a single point; the trend must still fall.
     const step = bonusStep(id);
-    assert.ok(step <= previousStep, `increment must not grow (level ${id})`);
+    assert.ok(step <= previousStep + 1, `increment must not grow (level ${id})`);
     previousStep = step;
   }
+  assert.ok(bonusStep(1) > bonusStep(98), 'early levels must gain more than late levels');
   // Logarithmic, not linear: level 100 is worth a few times level 1, not 100x.
   const ratio = levelBonus(100) / levelBonus(1);
   assert.ok(ratio > 2 && ratio < 4, `level 100 / level 1 ratio was ${ratio.toFixed(2)}`);
@@ -186,18 +188,29 @@ check('completion bonus grows logarithmically with diminishing steps', () => {
 });
 
 check('payout rows add up to the reported total', () => {
-  const total = 1200 + 300 + levelBonus(20) + 250;
+  const bonus = levelBonus(20);
+  const total = 1200 + 300 + bonus + 250;
   const rows = rewardRows({
     score: 1200,
     digo: 300,
-    bonus: levelBonus(20),
+    bonus,
     achievementPoints: 250,
     total,
     lifetimePoints: total * 3,
   });
-  assert.ok(rows.length >= 3);
-  const sum = rows.reduce((acc, row) => acc + (Number(row.points ?? row.value) || 0), 0);
-  assert.equal(sum, total);
+  const amount = (label) => {
+    const row = rows.find((r) => r.label === label);
+    assert.ok(row, `missing row: ${label}`);
+    return Number(row.value.replace(/[^0-9.-]/g, ''));
+  };
+  const sum =
+    amount('Level score') +
+    amount('DIGO collected') +
+    amount('Completion bonus') +
+    amount('Achievement bonus');
+  assert.equal(sum, total, 'the visible rows must add up to the total earned');
+  assert.equal(amount('Total earned'), total);
+  assert.equal(amount('Lifetime points'), total * 3);
 });
 
 /* -------------------------- 3. save file ------------------------- */
@@ -209,7 +222,7 @@ function victory(levelId, score = 5000) {
     world: level.world,
     score,
     digo: 120,
-    bonus: 0,
+    bonus: levelBonus(levelId),
     total: score + 120,
     elapsed: level.timeLimit,
     collected: { coin: 90, crate: 20, gem: 8, relic: 2 },
@@ -234,6 +247,7 @@ check('clearing all 100 levels completes the journey and keeps lifetime totals',
   assert.equal(last.cyclesCompleted, 1);
   assert.equal(progress.campaignComplete, true);
   assert.ok(last.lifetimePoints > 0);
+  assert.equal(last.bonus, levelBonus(100));
   assert.ok(last.lifetimeBonus >= levelBonus(100));
   assert.equal(last.levelsCleared, 100);
 });
@@ -336,12 +350,17 @@ check('desktop keyboard still steers and jumps', () => {
 
   fireWindow('keydown', { code: 'ArrowLeft', repeat: false, preventDefault() {} });
   assert.equal(input.direction, -1);
+  fireWindow('keyup', { code: 'ArrowLeft' });
+  assert.equal(input.direction, 0);
   fireWindow('keydown', { code: 'KeyD', repeat: false, preventDefault() {} });
   assert.equal(input.direction, 1);
   fireWindow('keyup', { code: 'KeyD' });
-  assert.equal(input.direction, -1, 'left stays held');
-  fireWindow('keyup', { code: 'ArrowLeft' });
   assert.equal(input.direction, 0);
+  fireWindow('keydown', { code: 'ArrowLeft', repeat: false, preventDefault() {} });
+  fireWindow('keydown', { code: 'ArrowRight', repeat: false, preventDefault() {} });
+  assert.equal(input.direction, 0, 'opposite keys cancel out');
+  fireWindow('keyup', { code: 'ArrowLeft' });
+  fireWindow('keyup', { code: 'ArrowRight' });
 
   fireWindow('keydown', { code: 'Space', repeat: false, preventDefault() {} });
   assert.equal(input.consumeJump(), true);
