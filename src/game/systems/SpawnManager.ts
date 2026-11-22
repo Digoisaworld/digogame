@@ -2,7 +2,6 @@ import type * as THREE from 'three';
 import { createEntity, buildBoss, type FallingEntity } from '../entities/objectFactory';
 import type { DangerKind, FallingKind, ModeId, PowerKind, RewardKind, WorldId } from '../types';
 import { POWERS, REWARDS } from '../types';
-import { WORLD_MAP } from '../worlds';
 import { MODE_MAP } from '../modes';
 
 /** Deterministic RNG (mulberry32) so daily challenges are identical. */
@@ -57,14 +56,12 @@ export class SpawnManager {
   private readonly worldId: WorldId;
   private readonly mode: ModeId;
   private readonly modeCfg;
-  private readonly worldCfg;
 
   constructor(scene: THREE.Scene, worldId: WorldId, mode: ModeId, seed: number) {
     this.scene = scene;
     this.worldId = worldId;
     this.mode = mode;
     this.rng = makeRng(seed);
-    this.worldCfg = WORLD_MAP[worldId];
     this.modeCfg = MODE_MAP[mode];
     this.bossTimer = this.modeCfg.bossInterval ?? 0;
   }
