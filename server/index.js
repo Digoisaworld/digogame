@@ -5,7 +5,7 @@
  *  - Serve the built client (dist/) and the JSON API from one port.
  *  - Issue HMAC-signed run tickets so a submitted score can be tied to a real
  *    run that started on the server (server-side reward validation).
- *  - Keep a per-mode leaderboard with plausibility checks on submitted runs.
+ *  - Keep a per-level leaderboard with plausibility checks on submitted runs.
  *  - Verify Phantom wallet ownership with an ed25519 message signature.
  *
  * Security notes
@@ -33,15 +33,34 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .map((s) => s.trim())
   .filter(Boolean);
 
-const MODES = ['endless', 'time', 'mission', 'boss', 'daily'];
 const WORLDS = ['island', 'cyber', 'temple', 'space', 'lava', 'crystal', 'frozen'];
-const REWARD_KINDS = ['coin', 'diamond', 'energy', 'chest', 'legendary'];
-const STAGES = [1, 2, 3, 4, 5];
+const REWARD_KINDS = ['coin', 'crate', 'gem', 'relic'];
 
-/** Mode time limits in seconds (null = open ended). */
-const MODE_DURATION = { endless: null, time: 60, mission: null, boss: null, daily: 75 };
+/**
+ * Campaign table. Mirrors src/game/levels.ts: the server needs the world, the
+ * time limit and the completion bonus so a submitted run can be checked
+ * against the level that was actually started.
+ */
+const LEVELS = [
+  { id: 1, world: 'island', duration: 75, bonus: 150 },
+  { id: 2, world: 'island', duration: 60, bonus: 220 },
+  { id: 3, world: 'cyber', duration: 70, bonus: 300 },
+  { id: 4, world: 'cyber', duration: 80, bonus: 380 },
+  { id: 5, world: 'temple', duration: 75, bonus: 460 },
+  { id: 6, world: 'temple', duration: 75, bonus: 540 },
+  { id: 7, world: 'space', duration: 85, bonus: 620 },
+  { id: 8, world: 'lava', duration: 80, bonus: 720 },
+  { id: 9, world: 'lava', duration: 80, bonus: 820 },
+  { id: 10, world: 'crystal', duration: 90, bonus: 950 },
+  { id: 11, world: 'frozen', duration: 85, bonus: 1100 },
+  { id: 12, world: 'frozen', duration: 90, bonus: 1500 },
+];
+const LEVEL_MAP = new Map(LEVELS.map((l) => [l.id, l]));
+
 /** Generous upper bound of score per second of play, used to reject absurd claims. */
 const MAX_SCORE_PER_SECOND = 620;
+/** Highest DIGO a single collected reward can be worth (legendary relic). */
+const MAX_DIGO_PER_REWARD = 15;
 const TICKET_TTL_MS = 3 * 60 * 60 * 1000;
 const LEADERBOARD_LIMIT = 100;
 
@@ -204,17 +223,15 @@ app.get('/api/health', (_req, res) => {
 /* ------------------------------- runs ------------------------------ */
 
 app.post('/api/runs/start', throttle, (req, res) => {
-  const { world, mode, stage } = req.body ?? {};
-  if (!WORLDS.includes(world)) return res.status(400).json({ error: 'Unknown world.' });
-  if (!MODES.includes(mode)) return res.status(400).json({ error: 'Unknown mode.' });
-  if (!STAGES.includes(stage)) return res.status(400).json({ error: 'Unknown stage.' });
+  const level = int(req.body?.level);
+  const def = level === null ? null : LEVEL_MAP.get(level);
+  if (!def) return res.status(400).json({ error: 'Unknown level.' });
 
   const payload = {
     rid: crypto.randomUUID(),
     seed: crypto.randomInt(1, 2 ** 31 - 1),
-    world,
-    mode,
-    stage,
+    level: def.id,
+    world: def.world,
     iat: Date.now(),
   };
   store.runsStarted += 1;
@@ -242,15 +259,20 @@ app.post('/api/runs', throttle, (req, res) => {
     return res.status(400).json({ accepted: false, reason: 'Malformed run result.' });
   }
 
-  const mode = ticket.mode;
-  const duration = MODE_DURATION[mode];
+  const def = LEVEL_MAP.get(ticket.level);
+  if (!def) {
+    store.runsRejected += 1;
+    saveStoreSoon();
+    return res.status(400).json({ accepted: false, reason: 'Run ticket references an unknown level.' });
+  }
+
   const ageSec = (Date.now() - ticket.iat) / 1000;
   const reasons = [];
 
-  if (result.mode !== mode || result.world !== ticket.world) reasons.push('Run identity mismatch.');
+  if (int(result.level) !== def.id || result.world !== ticket.world) reasons.push('Run identity mismatch.');
   if (elapsed > ageSec + 3) reasons.push('Reported play time exceeds real elapsed time.');
-  if (duration !== null && elapsed > duration + 5) reasons.push('Reported play time exceeds the mode limit.');
-  if (score > elapsed * MAX_SCORE_PER_SECOND + 5000) reasons.push('Score is not plausible for that play time.');
+  if (elapsed > def.duration + 5) reasons.push('Reported play time exceeds the level limit.');
+  if (score > elapsed * MAX_SCORE_PER_SECOND + def.bonus + 5000) reasons.push('Score is not plausible for that play time.');
 
   const collected = result.collected ?? {};
   let collectedTotal = 0;
@@ -262,6 +284,14 @@ app.post('/api/runs', throttle, (req, res) => {
   if (collectedTotal > elapsed * 12 + 40) reasons.push('Too many rewards for that play time.');
   if (int(result.hits) === null || int(result.hits) < 0) reasons.push('Invalid damage count.');
 
+  const digo = int(result.digo);
+  if (digo === null || digo < 0 || digo > collectedTotal * MAX_DIGO_PER_REWARD + 40) {
+    reasons.push('DIGO collected is not plausible for those rewards.');
+  }
+  const bonus = int(result.bonus) ?? 0;
+  if (bonus < 0 || bonus > def.bonus) reasons.push('Completion bonus exceeds the level award.');
+  if (bonus > 0 && elapsed < def.duration * 0.5) reasons.push('Completion bonus claimed too early.');
+
   if (reasons.length) {
     store.runsRejected += 1;
     saveStoreSoon();
@@ -269,50 +299,62 @@ app.post('/api/runs', throttle, (req, res) => {
   }
 
   const cleanAddress = validAddress(address) ? address : null;
+  const stars = Math.min(3, Math.max(0, int(result.stars) ?? 0));
+  const total = Math.round(score) + bonus;
   const entry = {
     id: crypto.randomUUID(),
     name: cleanName(name),
+    level: def.id,
+    world: def.world,
     score: Math.round(score),
-    mode,
-    world: ticket.world,
-    stage: ticket.stage,
+    total,
+    bonus,
+    digo: digo ?? 0,
+    stars,
+    victory: Boolean(result.victory),
     elapsed: Math.round(elapsed),
-    coins: int(result.coins) ?? 0,
     at: Date.now(),
     address: cleanAddress,
   };
 
-  const list = store.leaderboard[mode] ?? (store.leaderboard[mode] = []);
+  const key = String(def.id);
+  const list = store.leaderboard[key] ?? (store.leaderboard[key] = []);
   list.push(entry);
-  list.sort((x, y) => y.score - x.score || x.at - y.at);
-  store.leaderboard[mode] = list.slice(0, LEADERBOARD_LIMIT);
+  list.sort((x, y) => y.total - x.total || x.at - y.at);
+  store.leaderboard[key] = list.slice(0, LEADERBOARD_LIMIT);
   store.runsAccepted += 1;
   if (cleanAddress) store.wallets[cleanAddress] = { linkedAt: Date.now(), lastSeen: Date.now() };
   saveStoreSoon();
 
-  const rank = store.leaderboard[mode].findIndex((e) => e.id === entry.id);
+  const rank = store.leaderboard[key].findIndex((e) => e.id === entry.id);
   res.json({
     accepted: true,
     runId: ticket.rid,
-    best: store.leaderboard[mode][0]?.score ?? entry.score,
+    total,
+    best: store.leaderboard[key][0]?.total ?? total,
     rank: rank >= 0 ? rank + 1 : null,
+    stars,
     verified: true,
   });
 });
 
 app.get('/api/leaderboard', (req, res) => {
-  const mode = String(req.query.mode ?? 'endless');
-  if (!MODES.includes(mode)) return res.status(400).json({ error: 'Unknown mode.' });
+  const level = int(req.query.level) ?? 1;
+  const def = LEVEL_MAP.get(level);
+  if (!def) return res.status(400).json({ error: 'Unknown level.' });
   const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
-  const entries = (store.leaderboard[mode] ?? []).slice(0, limit).map((e) => ({
+  const list = store.leaderboard[String(def.id)] ?? [];
+  const entries = list.slice(0, limit).map((e) => ({
     name: e.name,
-    score: e.score,
-    mode: e.mode,
+    level: e.level,
     world: e.world,
+    score: e.score,
+    total: e.total,
+    stars: e.stars,
     at: e.at,
     address: e.address ? `${e.address.slice(0, 4)}…${e.address.slice(-4)}` : null,
   }));
-  res.json({ mode, entries, source: 'server', total: store.leaderboard[mode]?.length ?? 0 });
+  res.json({ level: def.id, entries, source: 'server', total: list.length });
 });
 
 /* ------------------------------ wallet ----------------------------- */
