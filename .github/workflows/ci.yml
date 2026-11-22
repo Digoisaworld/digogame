@@ -1,0 +1,30 @@
+name: DIGO CI
+
+on:
+  push:
+    branches: [appjet, main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Type-check
+        run: npm run typecheck
+      - name: Campaign and gameplay regression tests
+        run: npm test
+      - name: Production build
+        run: npm run build
