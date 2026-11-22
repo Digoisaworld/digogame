@@ -1,17 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DigoGame } from '../game/DigoGame';
-import type { GameEvent, HudState, RunConfig, RunResult } from '../game/types';
-import { applyRunResult, stageDef, STAGES, type Profile, type RunApplication } from '../game/progression';
-import { dailyKey } from '../game/modes';
-import { WORLD_MAP } from '../game/worlds';
-import { startRun, submitRun } from '../lib/api';
+import { levelById } from '../game/levels';
+import { worldById } from '../game/worlds';
+import {
+  POWER_META,
+  type HudState,
+  type RunConfig,
+  type RunResult,
+} from '../game/types';
+import { useProgress } from '../game/progress';
+import type { FinishReport } from '../App';
+import { Icon } from './icons';
 
 interface Props {
-  profile: Profile;
-  config: RunConfig;
-  onFinish: (app: RunApplication, result: RunResult) => void;
+  level: number;
+  seed: number;
   onExit: () => void;
-  onSettingsChange: (patch: Partial<Profile['settings']>) => void;
+  onRetry: () => void;
+  onNext: (level: number) => void;
+  onFinish: (result: RunResult) => Promise<FinishReport>;
 }
 
 interface Toast {
@@ -20,232 +27,185 @@ interface Toast {
   tone: 'good' | 'bad' | 'info';
 }
 
-const EMPTY_HUD: HudState = {
-  status: 'running',
-  score: 0,
-  combo: 0,
-  multiplier: 1,
-  health: 100,
-  maxHealth: 100,
-  lives: 3,
-  maxLives: 3,
-  level: 1,
-  time: 0,
-  world: 'island',
-  mode: 'endless',
-  stage: 1,
-  powerups: [],
-  boss: null,
-  objective: null,
-  coins: 0,
-  shield: false,
-};
-
-export default function GameScreen({ profile, config, onFinish, onExit, onSettingsChange }: Props) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+export function GameScreen({ level, seed, onExit, onRetry, onNext, onFinish }: Props) {
+  const progress = useProgress();
+  const mountRef = useRef<HTMLDivElement | null>(null);
   const padRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<DigoGame | null>(null);
-  const profileRef = useRef(profile);
-  profileRef.current = profile;
-
-  const [runKey, setRunKey] = useState(0);
-  const [hud, setHud] = useState<HudState>(EMPTY_HUD);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const [result, setResult] = useState<RunResult | null>(null);
-  const [application, setApplication] = useState<RunApplication | null>(null);
-  const [verdict, setVerdict] = useState<string>('Validating run…');
-  const [phase, setPhase] = useState<'loading' | 'playing' | 'paused' | 'over'>('loading');
-  const [hint, setHint] = useState(true);
   const toastId = useRef(0);
+
+  const [hud, setHud] = useState<HudState | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [paused, setPaused] = useState(false);
+  const [result, setResult] = useState<RunResult | null>(null);
+  const [report, setReport] = useState<FinishReport | null>(null);
+  const [ready, setReady] = useState(false);
+
+  const def = useMemo(() => levelById(level), [level]);
+  const world = worldById(def.world);
+  const finishRef = useRef(onFinish);
+  finishRef.current = onFinish;
 
   const pushToast = useCallback((text: string, tone: Toast['tone']) => {
     const id = ++toastId.current;
-    setToasts((prev) => [...prev.slice(-3), { id, text, tone }]);
-    window.setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 1400);
+    setToasts((list) => [...list.slice(-2), { id, text, tone }]);
+    window.setTimeout(() => setToasts((list) => list.filter((t) => t.id !== id)), 1500);
   }, []);
 
   useEffect(() => {
-    const container = containerRef.current;
-    const pad = padRef.current;
-    if (!container || !pad) return;
+    const host = mountRef.current;
+    if (!host) return;
 
-    let disposed = false;
-    let game: DigoGame | null = null;
-    let token: string | null = null;
-
-    const handleEvent = (event: GameEvent) => {
-      if (disposed) return;
-      if (event.type === 'hud') {
-        setHud(event.hud);
-        if (event.hud.status === 'paused') setPhase('paused');
-        else if (event.hud.status === 'running') setPhase((p) => (p === 'over' ? p : 'playing'));
-        return;
-      }
-      if (event.type === 'toast') {
-        pushToast(event.text, event.tone);
-        return;
-      }
-      if (event.type === 'ready') {
-        setPhase('playing');
-        return;
-      }
-      if (event.type === 'over') {
-        const app = applyRunResult(profileRef.current, event.result, dailyKey());
-        setResult(event.result);
-        setApplication(app);
-        setPhase('over');
-        onFinish(app, event.result);
-        if (token) {
-          submitRun(token, event.result, profileRef.current.name, profileRef.current.wallet.address)
-            .then((v) =>
-              setVerdict(
-                v.accepted
-                  ? `Server-verified · rank #${v.rank ?? '—'} · ${v.points ?? 0} pts`
-                  : `Run rejected: ${v.reason ?? 'invalid'}`,
-              ),
-            )
-            .catch(() => setVerdict('Offline run · saved locally only'));
-        } else {
-          setVerdict('Offline run · saved locally only');
-        }
-      }
+    const config: RunConfig = {
+      level: def,
+      seed,
+      musicVolume: progress.settings.music,
+      sfxVolume: progress.settings.sfx,
+      haptics: progress.settings.haptics,
+      controlMode: progress.settings.control,
+      quality: progress.settings.quality,
+      reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     };
 
-    (async () => {
-      let seed = Math.floor(Math.random() * 2_000_000_000);
-      try {
-        const ticket = await startRun(config.world, config.mode, config.stage);
-        seed = ticket.seed;
-        token = ticket.token;
-      } catch {
-        token = null;
+    const game = new DigoGame(host, config, (event) => {
+      if (event.type === 'hud') setHud(event.hud);
+      else if (event.type === 'toast') pushToast(event.text, event.tone);
+      else if (event.type === 'ready') setReady(true);
+      else if (event.type === 'over') {
+        setResult(event.result);
+        void finishRef.current(event.result).then(setReport);
       }
-      if (disposed) return;
-      try {
-        game = new DigoGame(container, { ...config, seed }, handleEvent);
-        gameRef.current = game;
-        game.attachPad(pad);
-      } catch (err) {
-        console.error('Failed to start DIGO engine', err);
-        pushToast('Could not start renderer', 'bad');
-      }
-    })();
+    });
 
-    const hintTimer = window.setTimeout(() => setHint(false), 6500);
+    gameRef.current = game;
+    game.attachPad(padRef.current);
 
     return () => {
-      disposed = true;
-      window.clearTimeout(hintTimer);
-      game?.dispose();
+      game.destroy();
       gameRef.current = null;
     };
+    // The game is created once per mounted attempt; settings changes apply to the next run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runKey, config.world, config.mode, config.stage]);
+  }, [def, seed, pushToast]);
 
-  const restart = () => {
-    setResult(null);
-    setApplication(null);
-    setVerdict('Validating run…');
-    setHud(EMPTY_HUD);
-    setPhase('loading');
-    setRunKey((k) => k + 1);
-  };
-
-  const togglePause = () => {
+  const togglePause = useCallback(() => {
     const game = gameRef.current;
-    if (!game) return;
-    if (phase === 'paused') {
+    if (!game || result) return;
+    if (paused) {
       game.resume();
-      setPhase('playing');
-    } else if (phase === 'playing') {
+      setPaused(false);
+    } else {
       game.pause();
-      setPhase('paused');
+      setPaused(true);
     }
-  };
+  }, [paused, result]);
 
   useEffect(() => {
-    gameRef.current?.setVolumes(profile.settings.music, profile.settings.sfx);
-  }, [profile.settings.music, profile.settings.sfx]);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === 'Escape' || e.code === 'KeyP') togglePause();
+    };
+    const onHide = () => {
+      if (document.hidden && !paused && !result) {
+        gameRef.current?.pause();
+        setPaused(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.removeEventListener('visibilitychange', onHide);
+    };
+  }, [togglePause, paused, result]);
 
-  const stage = stageDef(profile.stage);
-  const healthPct = Math.max(0, Math.min(100, (hud.health / hud.maxHealth) * 100));
+  const hold = (dir: number) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      e.preventDefault();
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+      gameRef.current?.setDirection(dir);
+    },
+    onPointerUp: () => gameRef.current?.setDirection(0),
+    onPointerCancel: () => gameRef.current?.setDirection(0),
+    onPointerLeave: () => gameRef.current?.setDirection(0),
+    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
+  });
+
+  const healthPct = hud ? Math.max(0, (hud.health / hud.maxHealth) * 100) : 100;
+  const timeLeft = hud ? Math.max(0, Math.ceil(hud.timeLimit - hud.time)) : def.timeLimit;
+  const goalPct = hud && hud.goal.target > 0 ? Math.min(100, (hud.goal.progress / hud.goal.target) * 100) : 0;
+  const showPad = progress.settings.control !== 'buttons';
+  const showButtons = progress.settings.control !== 'drag';
 
   return (
-    <div className="game-root">
-      <div className="game-canvas" ref={containerRef} />
+    <div className="game" style={{ ['--accent' as string]: world.accent, ['--accent2' as string]: world.accent2 }}>
+      <div ref={mountRef} className="game-canvas" />
 
-      {/* ---------------- HUD ---------------- */}
       <div className="hud">
         <div className="hud-top">
-          <div className="hud-score">
-            <span className="hud-score-value">{hud.score.toLocaleString()}</span>
-            <span className="hud-score-label">SCORE</span>
-          </div>
-          <div className="hud-mid">
-            <div className="hud-chip">{hud.mode === 'time' ? `${Math.max(0, Math.ceil(90 - hud.time))}s` : `${Math.floor(hud.time)}s`}</div>
-            <div className={`hud-chip combo ${hud.combo > 1 ? 'hot' : ''}`}>x{hud.multiplier.toFixed(1)}</div>
-          </div>
-          <button className="icon-btn" aria-label="Pause" onClick={togglePause}>
-            {phase === 'paused' ? '▶' : '❚❚'}
+          <button type="button" className="icon-btn" onClick={togglePause} aria-label="Pause">
+            <Icon name="pause" size={18} />
           </button>
+
+          <div className="hud-level">
+            <span className="hud-world">{world.name}</span>
+            <strong>
+              Level {def.id} · {def.name}
+            </strong>
+          </div>
+
+          <div className={`hud-timer${timeLeft <= 10 ? ' is-low' : ''}`}>
+            <Icon name="clock" size={15} />
+            {formatTime(timeLeft)}
+          </div>
         </div>
 
         <div className="hud-bars">
           <div className="bar health">
-            <div className="bar-fill" style={{ width: `${healthPct}%` }} />
-            <span className="bar-text">{Math.round(hud.health)} HP</span>
+            <span style={{ width: `${healthPct}%` }} />
+            <em>
+              <Icon name="heart" size={12} /> {Math.round(hud?.health ?? 100)}
+            </em>
           </div>
-          <div className="lives">
-            {Array.from({ length: hud.maxLives }).map((_, i) => (
-              <span key={i} className={`life ${i < hud.lives ? 'on' : 'off'}`}>
-                ♥
-              </span>
+          <div className="bar goal">
+            <span style={{ width: `${goalPct}%` }} />
+            <em>{hud?.goal.label ?? def.objective}</em>
+          </div>
+        </div>
+
+        <div className="hud-score">
+          <strong>{(hud?.score ?? 0).toLocaleString()}</strong>
+          <span>score</span>
+        </div>
+
+        <div className="hud-right">
+          <div className="hud-digo">
+            <Icon name="coin" size={15} />
+            {(hud?.digo ?? 0).toLocaleString()}
+          </div>
+          <div className="hud-stars">
+            {[0, 1, 2].map((i) => (
+              <Icon key={i} name="star" size={14} filled={(hud?.stars ?? 0) > i} className={(hud?.stars ?? 0) > i ? 'on' : 'off'} />
             ))}
           </div>
-        </div>
-
-        <div className="hud-sub">
-          <span className="pill">{WORLD_MAP[hud.world]?.name ?? 'World'}</span>
-          <span className="pill">{stage.name}</span>
-          <span className="pill">Lv {hud.level}</span>
-          <span className="pill gold">🪙 {hud.coins}</span>
-          {hud.shield && <span className="pill shield">🛡 Shield</span>}
-        </div>
-
-        {hud.objective && (
-          <div className="objective">
-            <span>{hud.objective.label}</span>
-            <div className="objective-bar">
-              <div
-                className="objective-fill"
-                style={{
-                  width: `${Math.min(100, (hud.objective.progress / hud.objective.target) * 100)}%`,
-                }}
-              />
+          {hud && hud.multiplier > 1 && (
+            <div className="hud-combo">
+              x{hud.multiplier.toFixed(1)}
+              {hud.combo > 1 && <em>{hud.combo} combo</em>}
             </div>
+          )}
+        </div>
+
+        {hud && hud.powerups.length > 0 && (
+          <div className="hud-powers">
+            {hud.powerups.map((p) => (
+              <div key={p.kind} className="power-chip" style={{ ['--p' as string]: POWER_META[p.kind].color }}>
+                <Icon name={POWER_META[p.kind].icon as never} size={14} />
+                <span>{POWER_META[p.kind].label}</span>
+                <i style={{ width: `${(p.remaining / p.total) * 100}%` }} />
+              </div>
+            ))}
           </div>
         )}
-
-        {hud.boss && (
-          <div className="boss-bar">
-            <span className="boss-name">👹 {hud.boss.name}</span>
-            <div className="bar boss">
-              <div
-                className="bar-fill"
-                style={{ width: `${Math.max(0, (hud.boss.hp / hud.boss.max) * 100)}%` }}
-              />
-            </div>
-          </div>
-        )}
-
-        <div className="powerups">
-          {hud.powerups.map((p) => (
-            <div key={p.kind} className="power-chip">
-              <span>{powerIcon(p.kind)}</span>
-              <i style={{ width: `${(p.remaining / p.total) * 100}%` }} />
-            </div>
-          ))}
-        </div>
 
         <div className="toasts">
           {toasts.map((t) => (
@@ -256,177 +216,166 @@ export default function GameScreen({ profile, config, onFinish, onExit, onSettin
         </div>
       </div>
 
-      {/* ---------------- Controls ---------------- */}
       <div className="controls">
-        {hint && phase === 'playing' && (
-          <div className="hint">HOLD &amp; DRAG anywhere in this area to move DIGO</div>
-        )}
-        <div className="pad" ref={padRef} data-testid="touch-pad">
-          <div className="pad-track">
-            <span className="pad-arrow left">◀</span>
-            <span className="pad-hint">HOLD &amp; DRAG</span>
-            <span className="pad-arrow right">▶</span>
-          </div>
-          <div className="pad-knob" />
-        </div>
-        {profile.settings.controls !== 'drag' && (
-          <div className="pad-buttons">
-            <button
-              className="pad-btn"
-              aria-label="Move left"
-              onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture?.(e.pointerId);
-                gameRef.current?.input.setButton('left', true);
-              }}
-              onPointerUp={() => gameRef.current?.input.setButton('left', false)}
-              onPointerCancel={() => gameRef.current?.input.setButton('left', false)}
-              onPointerLeave={() => gameRef.current?.input.setButton('left', false)}
-            >
-              ◀
+        {showPad && <div ref={padRef} className="control-pad" aria-label="Drag to move DIGO" />}
+        {showButtons && (
+          <div className="control-buttons">
+            <button type="button" className="ctl" aria-label="Move left" {...hold(-1)}>
+              <Icon name="arrowLeft" size={26} />
             </button>
             <button
-              className="pad-btn"
-              aria-label="Move right"
+              type="button"
+              className="ctl jump"
+              aria-label="Jump"
               onPointerDown={(e) => {
-                e.currentTarget.setPointerCapture?.(e.pointerId);
-                gameRef.current?.input.setButton('right', true);
+                e.preventDefault();
+                gameRef.current?.jump();
               }}
-              onPointerUp={() => gameRef.current?.input.setButton('right', false)}
-              onPointerCancel={() => gameRef.current?.input.setButton('right', false)}
-              onPointerLeave={() => gameRef.current?.input.setButton('right', false)}
             >
-              ▶
+              <Icon name="jump" size={24} />
+            </button>
+            <button type="button" className="ctl" aria-label="Move right" {...hold(1)}>
+              <Icon name="arrowRight" size={26} />
             </button>
           </div>
         )}
+        {showPad && !ready && <div className="pad-hint">Hold and drag to move · tap jump</div>}
       </div>
 
-      {/* ---------------- Pause ---------------- */}
-      {phase === 'paused' && (
+      {paused && !result && (
         <div className="overlay">
-          <div className="panel">
+          <div className="sheet">
             <h2>Paused</h2>
-            <p className="muted">DIGO is holding position.</p>
-            <button className="btn primary" onClick={togglePause}>
-              Resume
-            </button>
-            <button className="btn" onClick={restart}>
-              Restart run
-            </button>
-            <label className="slider">
-              <span>Music</span>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={profile.settings.music}
-                onChange={(e) => onSettingsChange({ music: Number(e.target.value) })}
-              />
-            </label>
-            <label className="slider">
-              <span>Sound FX</span>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={profile.settings.sfx}
-                onChange={(e) => onSettingsChange({ sfx: Number(e.target.value) })}
-              />
-            </label>
-            <button className="btn ghost" onClick={onExit}>
-              Quit to menu
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ---------------- Game over ---------------- */}
-      {phase === 'over' && result && application && (
-        <div className="overlay">
-          <div className="panel result-panel">
-            <h2 className={result.victory ? 'win' : 'lose'}>
-              {result.victory ? 'Victory!' : 'Defeat'}
-            </h2>
-            <p className="muted">{result.reason}</p>
-            <div className="result-score">{result.score.toLocaleString()}</div>
-            <div className="result-grid">
-              <div>
-                <span>🪙 Coins</span>
-                <b>+{result.coins}</b>
-              </div>
-              <div>
-                <span>✨ XP</span>
-                <b>+{result.xp}</b>
-              </div>
-              <div>
-                <span>🔥 Max combo</span>
-                <b>x{result.maxCombo}</b>
-              </div>
-              <div>
-                <span>⏱ Survived</span>
-                <b>{Math.floor(result.elapsed)}s</b>
-              </div>
+            <p className="sheet-sub">
+              Level {def.id} · {def.name}
+            </p>
+            <div className="sheet-actions">
+              <button type="button" className="btn primary" onClick={togglePause}>
+                <Icon name="play" size={18} filled /> Resume
+              </button>
+              <button type="button" className="btn ghost" onClick={onRetry}>
+                <Icon name="retry" size={18} /> Restart
+              </button>
+              <button type="button" className="btn ghost" onClick={onExit}>
+                <Icon name="home" size={18} /> Main menu
+              </button>
             </div>
-            {application.isBest && <div className="badge best">New personal best!</div>}
-            {application.levelsGained > 0 && (
-              <div className="badge level">Level up ×{application.levelsGained}</div>
-            )}
-            {application.newStage !== null && (
-              <div className="badge evolve">
-                Evolution unlocked: {STAGES.find((s) => s.index === application.newStage)?.name}
-              </div>
-            )}
-            {application.newWorlds.map((w) => (
-              <div key={w} className="badge world">
-                World unlocked: {WORLD_MAP[w].name}
-              </div>
-            ))}
-            {application.completedMissions.map((m) => (
-              <div key={m.id} className="badge mission">
-                Mission complete: {m.title} (+{m.rewardCoins} 🪙)
-              </div>
-            ))}
-            <div className="verdict">{verdict}</div>
-            <button className="btn primary" onClick={restart}>
-              Play again
-            </button>
-            <button className="btn ghost" onClick={onExit}>
-              Main menu
-            </button>
+            <p className="fineprint">{def.objective}</p>
           </div>
         </div>
       )}
 
-      {phase === 'loading' && (
-        <div className="overlay">
-          <div className="panel">
-            <h2>Loading {WORLD_MAP[config.world].name}</h2>
-            <p className="muted">Warming up the arena…</p>
-            <div className="spinner" />
-          </div>
-        </div>
+      {result && (
+        <ResultSheet
+          result={result}
+          report={report}
+          level={level}
+          onRetry={onRetry}
+          onExit={onExit}
+          onNext={onNext}
+        />
       )}
     </div>
   );
 }
 
-function powerIcon(kind: string): string {
-  switch (kind) {
-    case 'shield':
-      return '🛡';
-    case 'magnet':
-      return '🧲';
-    case 'slow':
-      return '🐌';
-    case 'double':
-      return '✖2';
-    case 'speed':
-      return '⚡';
-    case 'invincible':
-      return '✨';
-    default:
-      return '★';
-  }
+function ResultSheet({
+  result,
+  report,
+  level,
+  onRetry,
+  onExit,
+  onNext,
+}: {
+  result: RunResult;
+  report: FinishReport | null;
+  level: number;
+  onRetry: () => void;
+  onExit: () => void;
+  onNext: (level: number) => void;
+}) {
+  const next = level + 1;
+  const canNext = result.victory && next <= 12;
+
+  return (
+    <div className="overlay">
+      <div className={`sheet result${result.victory ? ' win' : ' lose'}`}>
+        <div className="result-badge">
+          <Icon name={result.victory ? 'trophy' : 'heart' } size={26} />
+        </div>
+        <h2>{result.victory ? 'Level Complete' : 'Run Over'}</h2>
+        <p className="sheet-sub">{result.reason}</p>
+
+        <div className="result-stars">
+          {[0, 1, 2].map((i) => (
+            <Icon key={i} name="star" size={30} filled={i < result.stars} className={i < result.stars ? 'on' : 'off'} />
+          ))}
+        </div>
+
+        <dl className="result-rows">
+          <div>
+            <dt>Level score</dt>
+            <dd>{result.score.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>DIGO collected</dt>
+            <dd>
+              <Icon name="coin" size={13} /> {result.digo.toLocaleString()}
+            </dd>
+          </div>
+          <div>
+            <dt>Completion bonus</dt>
+            <dd className={result.bonus > 0 ? 'gold' : ''}>{result.bonus > 0 ? `+${result.bonus}` : '—'}</dd>
+          </div>
+          <div className="total">
+            <dt>Total earned</dt>
+            <dd>{result.total.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>Best combo</dt>
+            <dd>x{Math.max(1, result.maxCombo)}</dd>
+          </div>
+          <div>
+            <dt>Objects dodged</dt>
+            <dd>{result.dodged}</dd>
+          </div>
+        </dl>
+
+        {report?.newBest && <p className="pill good">New level best!</p>}
+        {report?.unlockedNext && (
+          <p className="pill info">Level {report.unlockedNext} unlocked</p>
+        )}
+        {report?.newAchievements.map((a) => (
+          <p key={a.id} className="pill gold">
+            <Icon name="trophy" size={13} /> {a.title}
+          </p>
+        ))}
+        {report?.verdict && (
+          <p className={`verdict${report.verified ? ' ok' : ''}`}>
+            <Icon name={report.verified ? 'check' : 'info'} size={13} /> {report.verdict}
+          </p>
+        )}
+
+        <div className="sheet-actions">
+          {canNext && (
+            <button type="button" className="btn primary" onClick={() => onNext(next)}>
+              <Icon name="next" size={18} /> Next level
+            </button>
+          )}
+          <button type="button" className={`btn ${canNext ? 'ghost' : 'primary'}`} onClick={onRetry}>
+            <Icon name="retry" size={18} /> Retry level {level}
+          </button>
+          <button type="button" className="btn ghost" onClick={onExit}>
+            <Icon name="home" size={18} /> Main menu
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatTime(seconds: number) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
 }
