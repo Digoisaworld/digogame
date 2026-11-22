@@ -34,7 +34,8 @@ export interface BossState {
   dropTimer: number;
 }
 
-const LANE = 3.4;
+/** Half-width of the playfield in world units (portrait framing). */
+const LANE = 2.6;
 
 /**
  * Spawns, moves, recycles and pools every falling object.
