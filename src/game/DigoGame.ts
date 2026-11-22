@@ -269,6 +269,8 @@ export class DigoGame {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
     this.resizeObserver?.disconnect();
+    window.removeEventListener('resize', this.onViewportChange);
+    window.removeEventListener('orientationchange', this.onViewportChange);
     this.input.dispose();
     this.audio.dispose();
     for (const list of this.pool.values()) list.length = 0;
