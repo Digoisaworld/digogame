@@ -88,7 +88,7 @@ export const WORLDS: WorldDef[] = [
     accent: '#ffb43a',
     accent2: '#7cf3c0',
     skyTop: '#3c2412',
-    skyBottom: '#e8a martin'.replace(' martin', '55'),
+    skyBottom: '#e8a855',
     fog: '#c88f4d',
     fogDensity: 0.022,
     ground: '#9c7a4f',
