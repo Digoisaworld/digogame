@@ -65,7 +65,6 @@ export class DigoModel {
   private readonly aura: THREE.Sprite;
   private readonly shadow: THREE.Mesh;
 
-  private anim: DigoAnim = 'idle';
   private time = 0;
   private phase = 0;
   private blinkTimer = 1.8;

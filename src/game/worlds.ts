@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import type { WorldId } from '../types';
-import { groundTexture, noiseTexture, windowTexture } from '../render/textures';
+import type { WorldId } from './types';
+import { groundTexture, noiseTexture, windowTexture } from './render/textures';
 
 export interface WorldDef {
   id: WorldId;

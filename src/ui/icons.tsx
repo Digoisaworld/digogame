@@ -54,7 +54,7 @@ interface Props {
   filled?: boolean;
 }
 
-const PATHS: Record<IconName, JSX.Element> = {
+const PATHS: Record<IconName, ReactElement> = {
   play: <path d="M8 5.5v13l11-6.5z" fill="currentColor" stroke="none" />,
   pause: (
     <>

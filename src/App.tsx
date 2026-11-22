@@ -102,3 +102,5 @@ export function App() {
 
   return <Menu onPlay={(level) => void launch(level)} launching={launching} />;
 }
+
+export default App;

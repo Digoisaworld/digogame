@@ -409,7 +409,7 @@ export class DigoGame {
         size: 0.5,
         life: 0.5,
         gravity: 1.5,
-        direction: 'up',
+        direction: new THREE.Vector3(0, 1, 0),
       });
     }
 
