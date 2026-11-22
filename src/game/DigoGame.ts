@@ -124,6 +124,7 @@ export class DigoGame {
   private endTimer = 0;
 
   private readonly resizeObserver: ResizeObserver | null;
+  private readonly onViewportChange = () => this.resize();
 
   constructor(container: HTMLElement, config: RunConfig, onEvent: (event: GameEvent) => void) {
     this.container = container;
@@ -212,6 +213,8 @@ export class DigoGame {
         ? new ResizeObserver(() => this.resize())
         : null;
     this.resizeObserver?.observe(container);
+    window.addEventListener('resize', this.onViewportChange);
+    window.addEventListener('orientationchange', this.onViewportChange);
     this.resize();
 
     this.loop = this.loop.bind(this);
@@ -289,9 +292,22 @@ export class DigoGame {
   /* ------------------------------------------------------------------ */
 
   private resize(): void {
-    const w = this.container.clientWidth || window.innerWidth;
-    const h = this.container.clientHeight || window.innerHeight;
-    if (w <= 0 || h <= 0) return;
+    // Some embedded and headless browsers resolve percentage/viewport heights to
+    // 0, which silently collapses the canvas to a 0x0 box. Drive the size from
+    // the window metrics and pin explicit pixel dimensions so it can never
+    // disappear, with sensible portrait fallbacks if every metric is 0.
+    const viewportW = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportH = window.innerHeight || document.documentElement.clientHeight || 0;
+    const rect = this.container.getBoundingClientRect();
+    const w = Math.max(320, Math.round(viewportW || rect.width || 390));
+    const h = Math.max(480, Math.round(viewportH || rect.height || 844));
+
+    const canvas = this.renderer.domElement;
+    if (this.container.style.width !== `${w}px`) this.container.style.width = `${w}px`;
+    if (this.container.style.height !== `${h}px`) this.container.style.height = `${h}px`;
+    if (canvas.style.width !== `${w}px`) canvas.style.width = `${w}px`;
+    if (canvas.style.height !== `${h}px`) canvas.style.height = `${h}px`;
+
     this.camera.aspect = w / h;
     // Keep the full lane visible on tall phones.
     this.camera.fov = this.camera.aspect < 0.75 ? 56 : this.camera.aspect < 1 ? 50 : 46;
