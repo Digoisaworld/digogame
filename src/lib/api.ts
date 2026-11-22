@@ -1,4 +1,13 @@
-import type { ModeId, RunResult, WorldId } from '../game/types';
+import type { RunResult, WorldId } from '../game/types';
+
+/**
+ * Client for the DIGO game API.
+ *
+ * A run ticket is requested before gameplay and validated on the server when
+ * the run is submitted, so the leaderboard cannot be filled with invented
+ * scores. Tickets carry the server-chosen seed, which the client uses to spawn
+ * the level deterministically.
+ */
 
 const BASE = '/api';
 
@@ -11,9 +20,11 @@ export interface RunTicket {
 
 export interface LeaderboardEntry {
   name: string;
+  total: number;
   score: number;
-  mode: ModeId;
+  level: number;
   world: WorldId;
+  stars: number;
   at: number;
   address?: string | null;
 }
@@ -21,9 +32,10 @@ export interface LeaderboardEntry {
 export interface RunVerdict {
   accepted: boolean;
   reason?: string;
-  points?: number;
+  total?: number;
   best?: number;
   rank?: number;
+  stars?: number;
   verified?: boolean;
 }
 
@@ -45,12 +57,8 @@ async function get<T>(path: string): Promise<T> {
 }
 
 /** Asks the server for a signed run ticket (seed + start time). */
-export async function startRun(
-  world: WorldId,
-  mode: ModeId,
-  stage: number,
-): Promise<RunTicket> {
-  return post<RunTicket>('/runs/start', { world, mode, stage });
+export async function startRun(level: number): Promise<RunTicket> {
+  return post<RunTicket>('/runs/start', { level });
 }
 
 export async function submitRun(
@@ -62,9 +70,9 @@ export async function submitRun(
   return post<RunVerdict>('/runs', { token, result, name, address });
 }
 
-export async function fetchLeaderboard(mode: ModeId): Promise<LeaderboardEntry[]> {
+export async function fetchLeaderboard(limit = 20): Promise<LeaderboardEntry[]> {
   const data = await get<{ entries: LeaderboardEntry[] }>(
-    `/leaderboard?mode=${encodeURIComponent(mode)}&limit=25`,
+    `/leaderboard?limit=${encodeURIComponent(String(limit))}`,
   );
   return data.entries ?? [];
 }
