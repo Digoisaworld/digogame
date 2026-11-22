@@ -20,8 +20,8 @@ toward you.
 | Dangers | Bomb (fuse + sparks + flashing red), meteor (flame + smoke), electric hazard (arcs), spike trap, hostile enemy. Never visually confusable with rewards. |
 | Power-ups | Shield, magnet, slow motion, double reward, speed boost, invincibility. |
 | Worlds | Tropical Island, Cyberpunk Neon City, Ancient Treasure Temple, Space Galaxy, Lava World, Crystal Kingdom, Frozen Mountain. Each has its own sky, fog, lighting, ground, music scale/tempo and hazard flavour. |
-| Modes | Endless survival, Time challenge (60s), Mission mode (objective-driven), Boss survival (recurring boss), Daily challenge (seeded, same for everyone). |
-| Progression | XP → levels → 5 evolution stages, coins, missions, achievements, best scores, persistent profile in `localStorage`. |
+| Campaign | 12 handcrafted levels across all 7 worlds. Every level has one clear objective (collect DIGO, survive the clock, clear hazards), a time limit, a unique completion bonus and a 1–3 star score ladder. Levels unlock in order and the difficulty curve is tuned so each one is beatable. |
+| Progression | Level records, stars, accumulated DIGO, best scores and settings persisted in `localStorage`; 5 character evolution stages; achievements; per-level leaderboard on the server. |
 | Audio | Fully procedural Web Audio engine (no binary assets): per-reward collect sounds, bomb warning, explosion, damage, power-up, level up, victory/defeat, plus per-world generative background music and independent music/SFX volume. |
 | Controls | Pointer Events with pointer capture, multitouch-safe drag pad, smooth interpolation, plus optional left/right buttons. No text selection, no page scroll, no stuck movement. |
 | Backend | Express API with HMAC-signed run tickets, server-side score plausibility validation, per-mode leaderboard, and Phantom wallet ownership verification via ed25519 signature. |
