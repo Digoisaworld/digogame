@@ -124,7 +124,7 @@ export default function GameScreen({ profile, config, onFinish, onExit, onSettin
       try {
         game = new DigoGame(container, { ...config, seed }, handleEvent);
         gameRef.current = game;
-        game.input.attach(pad);
+        game.attachPad(pad);
       } catch (err) {
         console.error('Failed to start DIGO engine', err);
         pushToast('Could not start renderer', 'bad');
