@@ -1,111 +1,104 @@
 import { useCallback, useEffect, useState } from 'react';
-import { loadProfile, resetProfile, saveProfile, type Profile, type RunApplication } from './game/progression';
-import { dailySeed } from './game/modes';
-import type { ModeId, RunConfig, RunResult, WorldId } from './game/types';
-import GameScreen from './ui/GameScreen';
-import { CharacterSelect, Codex, MainMenu, ModeSelect, WorldSelect, type Screen } from './ui/Menu';
-import { AchievementsView, LeaderboardView, MissionsView, ProfileView } from './ui/Progress';
-import SettingsView from './ui/SettingsView';
+import { Menu } from './ui/Menu';
+import { GameScreen } from './ui/GameScreen';
+import { initWallet, useWallet } from './lib/wallet';
+import { loadProgress, recordRun } from './game/progress';
+import { startRun, submitRun } from './lib/api';
+import type { Achievement } from './game/progress';
+import type { RunResult } from './game/types';
 
-export default function App() {
-  const [profile, setProfile] = useState<Profile>(() => loadProfile());
-  const [screen, setScreen] = useState<Screen>('menu');
-  const [world, setWorld] = useState<WorldId>('island');
-  const [config, setConfig] = useState<RunConfig | null>(null);
+export interface FinishReport {
+  newBest: boolean;
+  unlockedNext: number | null;
+  newAchievements: Achievement[];
+  verdict: string | null;
+  verified: boolean;
+}
 
+type Route =
+  | { name: 'menu' }
+  | { name: 'game'; level: number; seed: number; token: string | null; attempt: number };
+
+let booted = false;
+
+export function App() {
+  const wallet = useWallet();
+  const [route, setRoute] = useState<Route>({ name: 'menu' });
+  const [launching, setLaunching] = useState<number | null>(null);
+
+  // Load the save file and detect Phantom once, before the first paint settles.
   useEffect(() => {
-    saveProfile(profile);
-  }, [profile]);
+    if (booted) return;
+    booted = true;
+    loadProgress();
+    initWallet();
+  }, []);
 
-  const play = useCallback(
-    (mode: ModeId) => {
-      const activeWorld: WorldId = profile.unlockedWorlds.includes(world) ? world : 'island';
-      setConfig({
-        world: activeWorld,
-        mode,
-        stage: profile.stage,
-        seed: mode === 'daily' ? dailySeed() : (Math.random() * 2 ** 31) | 0,
-        musicVolume: profile.settings.music,
-        sfxVolume: profile.settings.sfx,
-        haptics: profile.settings.haptics,
-        controlMode: profile.settings.controls,
-        quality: profile.settings.quality,
-      });
-      setScreen('game');
+  const launch = useCallback(async (level: number) => {
+    setLaunching(level);
+    let seed = Math.floor(Math.random() * 2 ** 31);
+    let token: string | null = null;
+    try {
+      const ticket = await startRun(level);
+      seed = ticket.seed;
+      token = ticket.token;
+    } catch {
+      // Offline or API unavailable: the level still plays with a local seed.
+    }
+    setLaunching(null);
+    setRoute({ name: 'game', level, seed, token, attempt: 0 });
+  }, []);
+
+  const finish = useCallback(
+    async (result: RunResult): Promise<FinishReport> => {
+      const outcome = recordRun(result);
+      const current = route;
+      let verdict: string | null = null;
+      let verified = false;
+      if (current.name === 'game' && current.token) {
+        try {
+          const res = await submitRun(
+            current.token,
+            result,
+            'DIGO Player',
+            wallet.address,
+          );
+          verified = Boolean(res.accepted);
+          verdict = res.accepted
+            ? `Server verified${res.rank ? ` · rank #${res.rank}` : ''}`
+            : res.reason ?? 'Run not verified';
+        } catch {
+          verdict = 'Score saved locally (server unavailable)';
+        }
+      } else {
+        verdict = 'Score saved locally';
+      }
+      return {
+        newBest: outcome.newBest,
+        unlockedNext: outcome.unlockedNext,
+        newAchievements: outcome.newAchievements,
+        verdict,
+        verified,
+      };
     },
-    [profile, world],
+    [route, wallet.address],
   );
 
-  const finishRun = useCallback((app: RunApplication, _result: RunResult) => {
-    setProfile(app.profile);
-  }, []);
-
-  const patchSettings = useCallback((patch: Partial<Profile['settings']>) => {
-    setProfile((p) => ({ ...p, settings: { ...p.settings, ...patch } }));
-  }, []);
-
-  if (screen === 'game' && config) {
+  if (route.name === 'game') {
     return (
       <GameScreen
-        profile={profile}
-        config={config}
-        onFinish={finishRun}
-        onSettingsChange={patchSettings}
-        onExit={() => {
-          setConfig(null);
-          setScreen('menu');
-        }}
+        key={`${route.level}-${route.seed}-${route.attempt}`}
+        level={route.level}
+        seed={route.seed}
+        onExit={() => setRoute({ name: 'menu' })}
+        onRetry={() =>
+          setRoute({ ...route, attempt: route.attempt + 1, seed: Math.floor(Math.random() * 2 ** 31) })
+        }
+        onNext={(level) => void launch(level)}
+        onFinish={finish}
       />
     );
   }
 
-  switch (screen) {
-    case 'modes':
-      return <ModeSelect profile={profile} onBack={() => setScreen('menu')} onPlay={play} />;
-    case 'worlds':
-      return (
-        <WorldSelect
-          profile={profile}
-          selected={world}
-          onBack={() => setScreen('menu')}
-          onSelect={(w) => {
-            setWorld(w);
-            setScreen('menu');
-          }}
-        />
-      );
-    case 'character':
-      return (
-        <CharacterSelect
-          profile={profile}
-          onBack={() => setScreen('menu')}
-          onSelect={(stage) => setProfile((p) => ({ ...p, stage }))}
-        />
-      );
-    case 'missions':
-      return <MissionsView profile={profile} onBack={() => setScreen('menu')} />;
-    case 'achievements':
-      return <AchievementsView profile={profile} onBack={() => setScreen('menu')} />;
-    case 'leaderboard':
-      return <LeaderboardView onBack={() => setScreen('menu')} />;
-    case 'profile':
-      return <ProfileView profile={profile} onBack={() => setScreen('menu')} />;
-    case 'codex':
-      return <Codex onBack={() => setScreen('menu')} />;
-    case 'settings':
-      return (
-        <SettingsView
-          profile={profile}
-          onBack={() => setScreen('menu')}
-          onSettings={patchSettings}
-          onName={(name) => setProfile((p) => ({ ...p, name }))}
-          onWallet={(address, verified) =>
-            setProfile((p) => ({ ...p, wallet: { address, linkedAt: address ? Date.now() : null, verified } }))
-          }
-          onReset={() => setProfile(resetProfile())}
-        />
-      );
-    default:
-      return <MainMenu profile={profile} world={world} onPlay={() => play('endless')} onNav={setScreen} />;
-  }
+  return <Menu onPlay={(level) => void launch(level)} launching={launching} />;
 }
