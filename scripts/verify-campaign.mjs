@@ -95,6 +95,7 @@ const { levelBonus, bonusStep, bonusFormula, rewardRows } = await vite.ssrLoadMo
 );
 const progressMod = await vite.ssrLoadModule('/src/game/progress.ts');
 const { InputController } = await vite.ssrLoadModule('/src/game/systems/InputController.ts');
+const { REWARD_POINTS, REWARD_DIGO } = await vite.ssrLoadModule('/src/game/types.ts');
 const serverCampaign = await import('../server/campaign.js');
 
 const results = [];
@@ -123,15 +124,36 @@ check('campaign has 100 contiguous, distinct levels', () => {
   assert.ok(signatures.size > 60, `expected varied level tuning, got ${signatures.size} distinct setups`);
 });
 
-check('every level is winnable (objective reachable inside its time limit)', () => {
+check('every level is winnable (objective reachable inside its reward budget)', () => {
+  const mean = (values) => values.reduce((a, b) => a + b, 0) / values.length;
+  const budget = (level) => {
+    const avgInterval = (level.spawn.interval[0] + level.spawn.interval[1]) / 2;
+    const rewardSpawns = (level.timeLimit / avgInterval) * (1 - level.spawn.dangerBias);
+    return {
+      points: rewardSpawns * mean(level.rewards.map((k) => REWARD_POINTS[k])),
+      digo: rewardSpawns * mean(level.rewards.map((k) => REWARD_DIGO[k])),
+    };
+  };
+
   for (const level of LEVELS) {
     assert.ok(level.timeLimit >= 55, `level ${level.id} is too short`);
     assert.ok(level.goal.target > 0, `level ${level.id} has no objective`);
-    // Even at one qualifying object per second the target must be reachable.
-    assert.ok(
-      level.goal.target <= level.timeLimit,
-      `level ${level.id} needs ${level.goal.target} in ${level.timeLimit}s`,
-    );
+    const available = budget(level);
+    if (level.goal.kind === 'survive') {
+      assert.ok(level.goal.target <= level.timeLimit, `level ${level.id} asks for more time than it gives`);
+    } else if (level.goal.kind === 'score') {
+      assert.ok(
+        level.goal.target <= available.points * 0.6,
+        `level ${level.id} asks for ${level.goal.target} of ${Math.round(available.points)} possible points`,
+      );
+    } else {
+      assert.ok(
+        level.goal.target <= available.digo * 0.6,
+        `level ${level.id} asks for ${level.goal.target} of ${Math.round(available.digo)} possible DIGO`,
+      );
+    }
+    // The first star must be reachable without a perfect run.
+    assert.ok(level.stars[0] <= available.points, `level ${level.id} star target is unreachable`);
     assert.ok(level.stars[0] > 0 && level.stars[0] < level.stars[1] && level.stars[1] < level.stars[2]);
   }
 });
