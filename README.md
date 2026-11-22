@@ -4,9 +4,9 @@ A mobile-first 3D arcade survival game. DIGO runs along the ground near the bott
 portrait screen while rewards and hazards rain down from above. Move, collect, dodge,
 survive, evolve.
 
-**Not a clicker game.** You never tap individual coins. You hold a control pad (or the
-optional arrow buttons) and DIGO follows your finger horizontally while the world falls
-toward you.
+**Not a clicker game.** You never tap individual coins. You drag your finger left and right
+across the play area and DIGO follows it horizontally, while the world falls toward you.
+Swipe up to jump. There are no on-screen arrow buttons.
 
 ---
 
@@ -20,10 +20,10 @@ toward you.
 | Dangers | Bomb (fuse + sparks + flashing red), meteor (flame + smoke), electric hazard (arcs), spike trap, hostile enemy. Never visually confusable with rewards. |
 | Power-ups | Shield, magnet, slow motion, double reward, speed boost, invincibility. |
 | Worlds | Tropical Island, Cyberpunk Neon City, Ancient Treasure Temple, Space Galaxy, Lava World, Crystal Kingdom, Frozen Mountain. Each has its own sky, fog, lighting, ground, music scale/tempo and hazard flavour. |
-| Campaign | 12 handcrafted levels across all 7 worlds. Every level has one clear objective (collect DIGO, survive the clock, clear hazards), a time limit, a unique completion bonus and a 1–3 star score ladder. Levels unlock in order and the difficulty curve is tuned so each one is beatable. |
-| Progression | Level records, stars, accumulated DIGO, best scores and settings persisted in `localStorage`; 5 character evolution stages; achievements; per-level leaderboard on the server. |
+| Campaign | 100 levels across all 7 worlds, grouped into 10 chapters of 10. Every level has one clear objective (collect DIGO, survive the clock, reach a score), its own time limit, its own completion bonus and a 1–3 star score ladder. Difficulty ramps from level 1 to 100, every target is reachable, and progress unlocks in order and saves automatically. |
+| Progression | Level records, stars, accumulated DIGO, lifetime totals and settings persisted in `localStorage`; 5 character evolution stages; achievements; per-level leaderboard on the server. Finishing level 100 opens a completion screen where **Start New Journey** replays the campaign from level 1 while keeping lifetime points, DIGO and achievements. |
 | Audio | Fully procedural Web Audio engine (no binary assets): per-reward collect sounds, bomb warning, explosion, damage, power-up, level up, victory/defeat, plus per-world generative background music and independent music/SFX volume. |
-| Controls | Pointer Events with pointer capture, multitouch-safe drag pad, smooth interpolation, plus optional left/right buttons. No text selection, no page scroll, no stuck movement. |
+| Controls | Finger swipes over Pointer Events with pointer capture: drag left/right to steer (relative to DIGO's position, so the character never teleports under your thumb), swipe up to jump, multi-touch safe, and releasing or cancelling the touch stops movement instantly. No text selection, no page scroll, no stuck movement. Desktop keeps `A`/`D`, arrow keys and `Space`. |
 | Backend | Express API with HMAC-signed run tickets, server-side score plausibility validation, per-mode leaderboard, and Phantom wallet ownership verification via ed25519 signature. |
 
 ---
@@ -75,10 +75,11 @@ npm start          # http://localhost:3000
 2. Tap **Connect Phantom** first — this build runs the wallet gate in mock/test mode,
    so connecting unlocks the level select. No transaction is sent and no keys are requested.
 3. Pick a level and press **Play**.
-3. Press and **hold** the large control pad at the bottom of the screen. Slide your
-   finger left/right — DIGO follows smoothly and keeps moving as long as you hold.
-4. Collect bright, glowing rewards. Avoid everything black/red/burning/spiky.
-5. Release to stop. Optional arrow buttons can be enabled in Settings → Controls.
+3. Touch anywhere in the play area and **drag** left or right — DIGO follows your finger
+   and keeps moving while you hold.
+4. **Swipe up** to jump over a hazard.
+5. Collect bright, glowing rewards. Avoid everything black/red/burning/spiky.
+6. Release to stop.
 
 Portrait orientation is the primary layout; the game also runs in landscape and on
 desktop (mouse drag and `A`/`D` or arrow keys).
@@ -120,20 +121,22 @@ Dockerfile                   multi-stage Alpine production image, non-root user
 .env.example                 every supported environment variable, documented
 server/
   index.js                   Express API + static hosting + run validation
+  campaign.js                server copy of the 100-level table used for validation
 src/
   main.tsx                   app bootstrap
   App.tsx                    screen router, wallet gate, run configuration
   game/
     types.ts                 shared types, reward/danger/power tables, RunConfig, RunResult
     worlds.ts                7 world definitions (palette, fog, music, hazard flavour)
-    levels.ts                12-level campaign: objectives, time limits, bonuses, stars
+    levels.ts                100-level campaign: 10 chapters, objectives, time limits, stars
+    rewards.ts               logarithmic bonus curve + transparent payout breakdown
     progress.ts              profile persistence, XP, evolution stages, settings
     DigoGame.ts              engine: renderer, camera, lights, loop, entities, HUD events
     character/DigoModel.ts   procedural DIGO rig, materials, 10 animations, 5 stages
     entities/objectFactory.ts reward, danger and power-up meshes with VFX + pooling
     render/textures.ts       procedural canvas textures (metal, rock, crystal, ground)
     render/ParticleSystem.ts pooled particle bursts for pickups, hits, explosions
-    systems/InputController.ts pointer-capture drag pad + button input, smoothing
+    systems/InputController.ts pointer-capture finger swipes (steer + jump), keyboard
     audio/AudioManager.ts    procedural SFX + generative per-world music
   lib/
     wallet.ts                wallet state store + mock/test mode adapter
@@ -161,6 +164,34 @@ src/
 - One shared renderer; geometry/material disposal is tracked and released on teardown.
 - Pixel ratio is capped by the quality setting (low/medium/high) to protect mid-range phones.
 - HUD updates are throttled and emitted as plain objects, keeping React out of the render loop.
+
+---
+
+### Scoring and rewards
+
+Everything the player earns is computed from one place, so the numbers on screen always
+match the numbers in the save file.
+
+- **Level score** — points from collected rewards during the run, with the combo
+  multiplier applied. Kept in full.
+- **DIGO collected** — the in-game currency for that level, kept in full.
+- **Completion bonus** — paid once when the level's objective is met. Bonuses follow a
+  logarithmic curve, so later levels are worth more while each step adds less:
+
+  ```
+  bonus(level) = round(180 × (1 + 1.1 × log2(1 + level)))
+  ```
+
+  Level 1 pays 180, level 10 pays about 690, level 100 about 1,370. Raise `BONUS_BASE` or
+  `BONUS_LOG_FACTOR` in `src/game/rewards.ts` to re-tune the whole curve; the server
+  table in `server/campaign.js` is generated from the same two constants and
+  `npm test` asserts that both sides agree on all 100 levels.
+- **Achievement bonus** — 250 points per achievement unlocked, credited once.
+- **Lifetime points** — every payout is added to a lifetime total that is never reset,
+  not even by **Start New Journey**.
+
+The victory screen lists each of these rows and their sum, so a player can always see
+exactly how a total was reached.
 
 ---
 
@@ -247,8 +278,11 @@ The server listens on `0.0.0.0:$PORT` and serves the SPA plus `/api` from the sa
 
 ## Manual test checklist
 
-- Hold-and-drag horizontal movement (continuous while held, no stuck state).
+- Drag left/right movement (continuous while held, no stuck state).
+- Swipe up to jump, once per gesture.
 - One-finger drag, then a second finger: no jump, no cancellation.
+- No arrow buttons on screen; keyboard still steers and jumps on desktop.
+- Level 100 completion → **Start New Journey** keeps lifetime points and achievements.
 - Reward collection increments score exactly once per object.
 - Bomb/hazard collision reduces health and grants brief invulnerability.
 - Power-up activation changes behaviour and shows in the HUD.
