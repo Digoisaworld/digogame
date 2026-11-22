@@ -64,7 +64,7 @@ export class DigoGame {
   private readonly warned = new WeakSet<object>();
   private disposed = false;
   private resizeObserver: ResizeObserver | null = null;
-  private readonly cameraTarget = new THREE.Vector3(0, 1.35, 0);
+  private readonly cameraTarget = new THREE.Vector3(0, 0.6, 0);
   private baseCameraZ = 14;
 
   private readonly onVisibility = () => {
