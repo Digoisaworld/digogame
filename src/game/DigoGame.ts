@@ -136,14 +136,14 @@ export class DigoGame {
     const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1;
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: quality === 'high',
+      antialias: true,
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(Math.min(dpr, quality === 'high' ? 2 : quality === 'medium' ? 1.6 : 1));
     this.renderer.shadowMap.enabled = quality !== 'low';
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.04;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.domElement.style.width = '100%';
     this.renderer.domElement.style.height = '100%';
     this.renderer.domElement.style.display = 'block';
@@ -194,8 +194,10 @@ export class DigoGame {
     this.scene.add(this.particles.points);
 
     this.input = new InputController({
-      drag: config.controlMode !== 'buttons',
-      buttons: config.controlMode !== 'drag',
+      // Swipe/drag movement is relative to DIGO's current position, so the
+      // character follows the finger instead of teleporting under it. Physics,
+      // speed and jump height are unchanged.
+      getX: () => this.digo.root.position.x,
     });
 
     this.audio.setVolumes(config.musicVolume, config.sfxVolume);
@@ -203,7 +205,10 @@ export class DigoGame {
     if (quality !== 'low') {
       this.composer = new EffectComposer(this.renderer);
       this.composer.addPass(new RenderPass(this.scene, this.camera));
-      const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.55, 0.8, 0.82);
+      // Softer, tighter bloom: the old wide glow bled over DIGO and made the
+      // character look soft and washed out. Threshold raised so only the
+      // brightest highlights bloom.
+      const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.34, 0.5, 0.9);
       this.composer.addPass(bloom);
       this.composer.addPass(new OutputPass());
     }
