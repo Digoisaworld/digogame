@@ -30,7 +30,7 @@ toward you.
 
 ## Tech stack
 
-- **React 18 + TypeScript + Vite** — UI, menus, HUD, routing between screens.
+- **React 19 + TypeScript + Vite** — UI, menus, HUD, routing between screens.
 - **Three.js** — 3D character, worlds, falling objects, particles, lighting.
 - **Express + Node** — one server that serves the built client and the JSON API.
 - **tweetnacl + bs58** — Solana wallet signature verification (verification only).
@@ -72,7 +72,9 @@ npm start          # http://localhost:3000
 ## Playing on a phone
 
 1. Open the deployed URL in Chrome on Android (or any modern mobile browser).
-2. Tap **PLAY**.
+2. Tap **Connect Phantom** first — this build runs the wallet gate in mock/test mode,
+   so connecting unlocks the level select. No transaction is sent and no keys are requested.
+3. Pick a level and press **Play**.
 3. Press and **hold** the large control pad at the bottom of the screen. Slide your
    finger left/right — DIGO follows smoothly and keeps moving as long as you hold.
 4. Collect bright, glowing rewards. Avoid everything black/red/burning/spiky.
@@ -83,42 +85,65 @@ desktop (mouse drag and `A`/`D` or arrow keys).
 
 ---
 
+## Full ownership / fresh clone
+
+This repository is the complete, self-contained game. Nothing lives only in a hosted
+builder: clone it anywhere with Node 20+ and it builds and runs.
+
+```bash
+git clone https://github.com/Digoisaworld/digogame.git
+cd digogame
+git checkout appjet          # active development branch (latest game code)
+npm ci                       # exact, locked dependency tree
+npm run build                # production bundle -> dist/
+npm start                    # http://localhost:3000
+```
+
+All art, geometry, textures, animation and audio are generated in code at runtime, so
+there are no external asset packs, CDN downloads or binary model files to fetch — the
+two PNG files are the only image assets and both are committed. `dist/` and
+`node_modules/` are build outputs and are intentionally not committed.
+
+---
+
 ## Architecture
 
 ```
-src/
-  main.tsx                  app bootstrap
-  App.tsx                   screen router + profile state + run configuration
-  game/
-    types.ts                shared types, reward/danger/power tables, RunConfig, RunResult
-    worlds.ts               7 world definitions (palette, fog, music scale, hazard flavour)
-    modes.ts                5 mode definitions (duration, spawn rate, danger bias, objectives)
-    progression.ts          profile persistence, XP/levels, evolution stages, missions,
-                            achievements, run result application
-    DigoGame.ts             engine: renderer, camera, lights, loop, entity update, HUD emit
-    entities/
-      DigoCharacter.ts      procedural DIGO rig + 10 animations + stage variations
-      objectFactory.ts      reward/danger/power-up/boss meshes with VFX and pooling support
-      environment.ts        world-specific ground, sky, props, lighting
-    systems/
-      InputController.ts    pointer-capture drag pad + button input, smoothing
-      SpawnManager.ts       weighted spawning, difficulty curve, boss scheduling, pooling
-      CollisionSystem.ts    circle/AABB collision, once-only reward pickup, i-frames
-      ScoreSystem.ts        points, combo multipliers, reward bookkeeping
-      HealthSystem.ts       health, lives, damage, invulnerability window
-      PowerUpSystem.ts      timed power-up effects and HUD state
-    audio/AudioManager.ts   procedural SFX + generative music
-  lib/
-    api.ts                  typed client for the run/leaderboard/wallet endpoints
-    phantom.ts              Phantom provider discovery, connect, sign, short address
-  ui/
-    Menu.tsx                main menu, mode select, world select, character select, codex
-    Progress.tsx            missions, achievements, leaderboard, profile
-    SettingsView.tsx        audio, controls, haptics, quality, wallet, reset
-    GameScreen.tsx          canvas host, HUD, pause, game over, wallet link
-    styles.css              mobile-first theme
+public/digo/digo-logo.png    official DIGO logo (served with the app)
+digo-logo-transparent.png    official DIGO logo reference image (repo root)
+index.html                   Vite entry + mobile viewport meta
+package.json                 dependencies, scripts, engines (Node >= 20)
+package-lock.json            exact dependency lock (npm ci is reproducible)
+vite.config.ts               Vite + React plugin, /api dev proxy
+tsconfig.json                strict TypeScript config
+Dockerfile                   multi-stage Alpine production image, non-root user
+.env.example                 every supported environment variable, documented
 server/
-  index.js                  Express API + static hosting
+  index.js                   Express API + static hosting + run validation
+src/
+  main.tsx                   app bootstrap
+  App.tsx                    screen router, wallet gate, run configuration
+  game/
+    types.ts                 shared types, reward/danger/power tables, RunConfig, RunResult
+    worlds.ts                7 world definitions (palette, fog, music, hazard flavour)
+    levels.ts                12-level campaign: objectives, time limits, bonuses, stars
+    progress.ts              profile persistence, XP, evolution stages, settings
+    DigoGame.ts              engine: renderer, camera, lights, loop, entities, HUD events
+    character/DigoModel.ts   procedural DIGO rig, materials, 10 animations, 5 stages
+    entities/objectFactory.ts reward, danger and power-up meshes with VFX + pooling
+    render/textures.ts       procedural canvas textures (metal, rock, crystal, ground)
+    render/ParticleSystem.ts pooled particle bursts for pickups, hits, explosions
+    systems/InputController.ts pointer-capture drag pad + button input, smoothing
+    audio/AudioManager.ts    procedural SFX + generative per-world music
+  lib/
+    wallet.ts                wallet state store + mock/test mode adapter
+    phantom.ts               Phantom provider discovery, connect, sign, short address
+    api.ts                   typed client for run/leaderboard/wallet endpoints
+  ui/
+    Menu.tsx                 main menu, level select, character select
+    GameScreen.tsx           canvas host, HUD, pause, victory/game-over
+    icons.tsx                inline SVG icon set (no icon font dependency)
+    styles.css               mobile-first theme
 ```
 
 ### Key contracts
@@ -166,7 +191,9 @@ The server never trusts client-submitted best scores, and never claims on-chain 
 
 ## Phantom / Solana preparation
 
-- The game is fully playable **without** a wallet.
+- **The wallet gate is mandatory before play in this build**, running in mock/test mode:
+  connect Phantom (or the built-in test adapter) and the campaign unlocks. No transaction
+  is created and no funds can move.
 - Wallet linking is optional and lives in Settings → Wallet.
 - The flow is: connect → request a server challenge message → user signs the message in
   Phantom → server verifies the ed25519 signature against the public key.
