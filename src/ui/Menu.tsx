@@ -6,14 +6,13 @@ import {
   levelRecord,
   resetProgress,
   setName,
-  totalBestScore,
   totalStars,
   updateSettings,
   useProgress,
   type Progress,
 } from '../game/progress';
-import { LAST_LEVEL, LEVELS, goalLabel, levelById, nextLevelId } from '../game/levels';
-import { WORLDS, worldById } from '../game/worlds';
+import { CHAPTERS, LAST_LEVEL, LEVELS, goalLabel, levelById, nextLevelId } from '../game/levels';
+import { worldById } from '../game/worlds';
 import { DANGER_META, POWER_META, REWARD_META, type LevelDef } from '../game/types';
 import { connect, disconnect, signIn, useWallet } from '../lib/wallet';
 import { shortAddress } from '../lib/phantom';
@@ -32,7 +31,7 @@ export function Menu({ onPlay, launching }: Props) {
   const [walletBusy, setWalletBusy] = useState(false);
 
   const stars = totalStars(progress);
-  const best = totalBestScore(progress);
+  const lifetime = progress.lifetime.points;
   const cleared = LEVELS.filter((l) => levelRecord(l.id, progress).cleared).length;
   const playable = Math.min(progress.unlocked, LAST_LEVEL);
   const focusLevel = levelById(playable);
@@ -97,7 +96,7 @@ export function Menu({ onPlay, launching }: Props) {
         <div className="stat-row">
           <Stat icon="star" label="Stars" value={`${stars}/${LAST_LEVEL * 3}`} />
           <Stat icon="coin" label="DIGO" value={progress.digo.toLocaleString()} />
-          <Stat icon="trophy" label="Best total" value={best.toLocaleString()} />
+          <Stat icon="trophy" label="Lifetime" value={lifetime.toLocaleString()} />
         </div>
 
         {connected ? (
@@ -201,19 +200,26 @@ function Campaign({
 }) {
   return (
     <section className="panel campaign">
-      {WORLDS.map((world) => {
-        const levels = LEVELS.filter((l) => l.world === world.id);
+      {CHAPTERS.map((chapter) => {
+        const clearedCount = chapter.levels.filter((l) => levelRecord(l.id, progress).cleared).length;
+        const world = worldById(chapter.world);
+        const first = chapter.levels[0].id;
+        const last = chapter.levels[chapter.levels.length - 1].id;
         return (
-          <div key={world.id} className="world-block">
+          <div key={chapter.index} className="world-block">
             <header className="world-head" style={{ ['--accent' as string]: world.accent }}>
               <span className="world-swatch" />
               <div>
-                <h3>{world.name}</h3>
-                <p>{world.description}</p>
+                <h3>
+                  Chapter {chapter.index} · {chapter.name}
+                </h3>
+                <p>
+                  Levels {first}–{last} · {clearedCount}/{chapter.levels.length} cleared · {world.name}
+                </p>
               </div>
             </header>
             <div className="level-grid">
-              {levels.map((level) => (
+              {chapter.levels.map((level) => (
                 <LevelCard
                   key={level.id}
                   level={level}
@@ -296,6 +302,11 @@ function Profile({ progress, cleared, stars }: { progress: Progress; cleared: nu
           <div><strong>{cleared}/{LAST_LEVEL}</strong><span>Levels cleared</span></div>
           <div><strong>{stars}</strong><span>Stars earned</span></div>
           <div><strong>{progress.digo.toLocaleString()}</strong><span>DIGO collected</span></div>
+        </div>
+        <div className="profile-stats">
+          <div><strong>{progress.lifetime.points.toLocaleString()}</strong><span>Lifetime points</span></div>
+          <div><strong>{progress.lifetime.bonus.toLocaleString()}</strong><span>Completion bonuses</span></div>
+          <div><strong>{progress.cyclesCompleted}</strong><span>Journeys finished</span></div>
         </div>
       </div>
 
