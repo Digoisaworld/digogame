@@ -91,7 +91,7 @@ export class DigoModel {
       clearcoatRoughness: 0.22,
       sheen: 0.6,
       sheenColor: new THREE.Color('#ffd9c2'),
-      envMapIntensity: 1.15,
+      envMapIntensity: 0.95,
     });
     this.feetMat = new THREE.MeshPhysicalMaterial({
       color: '#ff9c1a',
@@ -99,7 +99,7 @@ export class DigoModel {
       metalness: 0.05,
       clearcoat: 1,
       clearcoatRoughness: 0.1,
-      envMapIntensity: 1.5,
+      envMapIntensity: 1.15,
     });
     this.armMat = new THREE.MeshPhysicalMaterial({
       map: bodyTexture(cream, '#e8a688', '#fff4e8'),
@@ -146,7 +146,7 @@ export class DigoModel {
       metalness: 0.0,
       clearcoat: 1,
       clearcoatRoughness: 0.06,
-      envMapIntensity: 1.3,
+      envMapIntensity: 1.05,
     });
     const pupilGeo = new THREE.SphereGeometry(0.232, 32, 24);
     const pupilMat = new THREE.MeshPhysicalMaterial({
@@ -155,7 +155,7 @@ export class DigoModel {
       metalness: 0.0,
       clearcoat: 1,
       clearcoatRoughness: 0.05,
-      envMapIntensity: 1.6,
+      envMapIntensity: 1.2,
     });
     const lidGeo = new THREE.SphereGeometry(0.336, 32, 20);
     const hiGeo = new THREE.SphereGeometry(0.062, 16, 12);
@@ -273,7 +273,9 @@ export class DigoModel {
 
   setAura(intensity: number, color?: string): void {
     const mat = this.aura.material as THREE.SpriteMaterial;
-    mat.opacity = THREE.MathUtils.clamp(intensity, 0, 1) * 0.8;
+    // The additive aura used to wash over the body and soften the silhouette;
+    // keeping it subtle leaves the character crisp against the background.
+    mat.opacity = THREE.MathUtils.clamp(intensity, 0, 1) * 0.55;
     if (color) mat.color.set(color);
   }
 

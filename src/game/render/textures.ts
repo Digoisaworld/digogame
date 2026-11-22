@@ -21,7 +21,7 @@ function canvas(size: number, height = size): { c: HTMLCanvasElement; ctx: Canva
 function finish(c: HTMLCanvasElement, srgb = true): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  tex.anisotropy = 8;
+  tex.anisotropy = 16;
   tex.needsUpdate = true;
   return tex;
 }
@@ -88,7 +88,11 @@ export function bodyTexture(base = '#f8d3b6', shade = '#e6a487', light = '#fff3e
   const key = `body-${base}`;
   const hit = cache.get(key);
   if (hit) return hit;
-  const { c, ctx } = canvas(512);
+  // Drawn at 1.5x and kept in the original 512-unit coordinate space, so the
+  // skin has visibly finer grain on high-DPI phone screens without changing the
+  // artwork itself.
+  const { c, ctx } = canvas(768);
+  ctx.scale(1.5, 1.5);
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, 512, 512);
   const g = ctx.createRadialGradient(256, 210, 40, 256, 300, 330);
@@ -98,10 +102,10 @@ export function bodyTexture(base = '#f8d3b6', shade = '#e6a487', light = '#fff3e
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 512, 512);
   const rand = rnd(7);
-  for (let i = 0; i < 2600; i++) {
+  for (let i = 0; i < 5200; i++) {
     const a = rand() * 0.05;
     ctx.fillStyle = rand() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(120,60,40,${a * 0.8})`;
-    const r = rand() * 2.2 + 0.4;
+    const r = rand() * 1.7 + 0.3;
     ctx.beginPath();
     ctx.arc(rand() * 512, rand() * 512, r, 0, Math.PI * 2);
     ctx.fill();
@@ -116,7 +120,8 @@ export function eyeTexture(): THREE.Texture {
   const key = 'eye';
   const hit = cache.get(key);
   if (hit) return hit;
-  const { c, ctx } = canvas(256);
+  const { c, ctx } = canvas(384);
+  ctx.scale(1.5, 1.5);
   const g = ctx.createLinearGradient(0, 0, 0, 256);
   g.addColorStop(0, '#c9d4e2');
   g.addColorStop(0.32, '#ffffff');

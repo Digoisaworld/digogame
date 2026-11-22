@@ -33,29 +33,16 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .map((s) => s.trim())
   .filter(Boolean);
 
-const WORLDS = ['island', 'cyber', 'temple', 'space', 'lava', 'crystal', 'frozen'];
 const REWARD_KINDS = ['coin', 'crate', 'gem', 'relic'];
 
 /**
  * Campaign table. Mirrors src/game/levels.ts: the server needs the world, the
  * time limit and the completion bonus so a submitted run can be checked
- * against the level that was actually started.
+ * against the level that was actually started. Generated in ./campaign.js from
+ * the same logarithmic rules, and scripts/verify-campaign.ts asserts that both
+ * sides agree on all 100 levels.
  */
-const LEVELS = [
-  { id: 1, world: 'island', duration: 75, bonus: 150 },
-  { id: 2, world: 'island', duration: 60, bonus: 220 },
-  { id: 3, world: 'cyber', duration: 70, bonus: 300 },
-  { id: 4, world: 'cyber', duration: 80, bonus: 380 },
-  { id: 5, world: 'temple', duration: 75, bonus: 460 },
-  { id: 6, world: 'temple', duration: 75, bonus: 540 },
-  { id: 7, world: 'space', duration: 85, bonus: 620 },
-  { id: 8, world: 'lava', duration: 80, bonus: 720 },
-  { id: 9, world: 'lava', duration: 80, bonus: 820 },
-  { id: 10, world: 'crystal', duration: 90, bonus: 950 },
-  { id: 11, world: 'frozen', duration: 85, bonus: 1100 },
-  { id: 12, world: 'frozen', duration: 90, bonus: 1500 },
-];
-const LEVEL_MAP = new Map(LEVELS.map((l) => [l.id, l]));
+import { LEVEL_MAP } from './campaign.js';
 
 /** Generous upper bound of score per second of play, used to reject absurd claims. */
 const MAX_SCORE_PER_SECOND = 620;

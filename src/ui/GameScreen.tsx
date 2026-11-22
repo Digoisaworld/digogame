@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DigoGame } from '../game/DigoGame';
-import { levelById } from '../game/levels';
+import { LAST_LEVEL, levelById } from '../game/levels';
 import { worldById } from '../game/worlds';
 import {
   POWER_META,
@@ -18,6 +18,7 @@ interface Props {
   onExit: () => void;
   onRetry: () => void;
   onNext: (level: number) => void;
+  onNewJourney: () => void;
   onFinish: (result: RunResult) => Promise<FinishReport>;
 }
 
@@ -27,7 +28,15 @@ interface Toast {
   tone: 'good' | 'bad' | 'info';
 }
 
-export function GameScreen({ level, seed, onExit, onRetry, onNext, onFinish }: Props) {
+export function GameScreen({
+  level,
+  seed,
+  onExit,
+  onRetry,
+  onNext,
+  onNewJourney,
+  onFinish,
+}: Props) {
   const progress = useProgress();
   const mountRef = useRef<HTMLDivElement | null>(null);
   const padRef = useRef<HTMLDivElement | null>(null);
@@ -118,26 +127,16 @@ export function GameScreen({ level, seed, onExit, onRetry, onNext, onFinish }: P
     };
   }, [togglePause, paused, result]);
 
-  const hold = (dir: number) => ({
-    onPointerDown: (e: React.PointerEvent) => {
-      e.preventDefault();
-      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-      gameRef.current?.setDirection(dir);
-    },
-    onPointerUp: () => gameRef.current?.setDirection(0),
-    onPointerCancel: () => gameRef.current?.setDirection(0),
-    onPointerLeave: () => gameRef.current?.setDirection(0),
-    onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
-  });
-
   const healthPct = hud ? Math.max(0, (hud.health / hud.maxHealth) * 100) : 100;
   const timeLeft = hud ? Math.max(0, Math.ceil(hud.timeLimit - hud.time)) : def.timeLimit;
-  const goalPct = hud && hud.goal.target > 0 ? Math.min(100, (hud.goal.progress / hud.goal.target) * 100) : 0;
-  const showPad = progress.settings.control !== 'buttons';
-  const showButtons = progress.settings.control !== 'drag';
+  const goalPct =
+    hud && hud.goal.target > 0 ? Math.min(100, (hud.goal.progress / hud.goal.target) * 100) : 0;
 
   return (
-    <div className="game" style={{ ['--accent' as string]: world.accent, ['--accent2' as string]: world.accent2 }}>
+    <div
+      className="game"
+      style={{ ['--accent' as string]: world.accent, ['--accent2' as string]: world.accent2 }}
+    >
       <div ref={mountRef} className="game-canvas" />
 
       <div className="hud">
@@ -184,7 +183,13 @@ export function GameScreen({ level, seed, onExit, onRetry, onNext, onFinish }: P
           </div>
           <div className="hud-stars">
             {[0, 1, 2].map((i) => (
-              <Icon key={i} name="star" size={14} filled={(hud?.stars ?? 0) > i} className={(hud?.stars ?? 0) > i ? 'on' : 'off'} />
+              <Icon
+                key={i}
+                name="star"
+                size={14}
+                filled={(hud?.stars ?? 0) > i}
+                className={(hud?.stars ?? 0) > i ? 'on' : 'off'}
+              />
             ))}
           </div>
           {hud && hud.multiplier > 1 && (
@@ -198,7 +203,11 @@ export function GameScreen({ level, seed, onExit, onRetry, onNext, onFinish }: P
         {hud && hud.powerups.length > 0 && (
           <div className="hud-powers">
             {hud.powerups.map((p) => (
-              <div key={p.kind} className="power-chip" style={{ ['--p' as string]: POWER_META[p.kind].color }}>
+              <div
+                key={p.kind}
+                className="power-chip"
+                style={{ ['--p' as string]: POWER_META[p.kind].color }}
+              >
                 <Icon name={POWER_META[p.kind].icon as never} size={14} />
                 <span>{POWER_META[p.kind].label}</span>
                 <i style={{ width: `${(p.remaining / p.total) * 100}%` }} />
@@ -216,30 +225,15 @@ export function GameScreen({ level, seed, onExit, onRetry, onNext, onFinish }: P
         </div>
       </div>
 
+      {/* Finger controls: the pad covers the lower screen. Drag left/right to
+          steer DIGO, swipe up to jump. No arrow buttons. */}
       <div className="controls">
-        {showPad && <div ref={padRef} className="control-pad" aria-label="Drag to move DIGO" />}
-        {showButtons && (
-          <div className="control-buttons">
-            <button type="button" className="ctl" aria-label="Move left" {...hold(-1)}>
-              <Icon name="arrowLeft" size={26} />
-            </button>
-            <button
-              type="button"
-              className="ctl jump"
-              aria-label="Jump"
-              onPointerDown={(e) => {
-                e.preventDefault();
-                gameRef.current?.jump();
-              }}
-            >
-              <Icon name="jump" size={24} />
-            </button>
-            <button type="button" className="ctl" aria-label="Move right" {...hold(1)}>
-              <Icon name="arrowRight" size={26} />
-            </button>
-          </div>
-        )}
-        {showPad && !ready && <div className="pad-hint">Hold and drag to move · tap jump</div>}
+        <div
+          ref={padRef}
+          className="control-pad"
+          aria-label="Drag left or right to move DIGO, swipe up to jump"
+        />
+        {!ready && <div className="pad-hint">Drag to steer · swipe up to jump</div>}
       </div>
 
       {paused && !result && (
@@ -265,7 +259,16 @@ export function GameScreen({ level, seed, onExit, onRetry, onNext, onFinish }: P
         </div>
       )}
 
-      {result && (
+      {result && report?.campaignComplete && (
+        <CompletionSheet
+          report={report}
+          result={result}
+          onNewJourney={onNewJourney}
+          onExit={onExit}
+        />
+      )}
+
+      {result && !report?.campaignComplete && (
         <ResultSheet
           result={result}
           report={report}
@@ -295,20 +298,26 @@ function ResultSheet({
   onNext: (level: number) => void;
 }) {
   const next = level + 1;
-  const canNext = result.victory && next <= 12;
+  const canNext = result.victory && next <= LAST_LEVEL;
 
   return (
     <div className="overlay">
       <div className={`sheet result${result.victory ? ' win' : ' lose'}`}>
         <div className="result-badge">
-          <Icon name={result.victory ? 'trophy' : 'heart' } size={26} />
+          <Icon name={result.victory ? 'trophy' : 'heart'} size={26} />
         </div>
         <h2>{result.victory ? 'Level Complete' : 'Run Over'}</h2>
         <p className="sheet-sub">{result.reason}</p>
 
         <div className="result-stars">
           {[0, 1, 2].map((i) => (
-            <Icon key={i} name="star" size={30} filled={i < result.stars} className={i < result.stars ? 'on' : 'off'} />
+            <Icon
+              key={i}
+              name="star"
+              size={30}
+              filled={i < result.stars}
+              className={i < result.stars ? 'on' : 'off'}
+            />
           ))}
         </div>
 
@@ -325,12 +334,26 @@ function ResultSheet({
           </div>
           <div>
             <dt>Completion bonus</dt>
-            <dd className={result.bonus > 0 ? 'gold' : ''}>{result.bonus > 0 ? `+${result.bonus}` : '—'}</dd>
+            <dd className={result.bonus > 0 ? 'gold' : ''}>
+              {result.bonus > 0 ? `+${result.bonus.toLocaleString()}` : '—'}
+            </dd>
           </div>
+          {(report?.achievementPoints ?? 0) > 0 && (
+            <div>
+              <dt>Achievement points</dt>
+              <dd className="gold">+{(report?.achievementPoints ?? 0).toLocaleString()}</dd>
+            </div>
+          )}
           <div className="total">
             <dt>Total earned</dt>
             <dd>{result.total.toLocaleString()}</dd>
           </div>
+          {report && (
+            <div>
+              <dt>Lifetime points</dt>
+              <dd>{report.lifetimePoints.toLocaleString()}</dd>
+            </div>
+          )}
           <div>
             <dt>Best combo</dt>
             <dd>x{Math.max(1, result.maxCombo)}</dd>
@@ -342,9 +365,7 @@ function ResultSheet({
         </dl>
 
         {report?.newBest && <p className="pill good">New level best!</p>}
-        {report?.unlockedNext && (
-          <p className="pill info">Level {report.unlockedNext} unlocked</p>
-        )}
+        {report?.unlockedNext && <p className="pill info">Level {report.unlockedNext} unlocked</p>}
         {report?.newAchievements.map((a) => (
           <p key={a.id} className="pill gold">
             <Icon name="trophy" size={13} /> {a.title}
@@ -364,6 +385,79 @@ function ResultSheet({
           )}
           <button type="button" className={`btn ${canNext ? 'ghost' : 'primary'}`} onClick={onRetry}>
             <Icon name="retry" size={18} /> Retry level {level}
+          </button>
+          <button type="button" className="btn ghost" onClick={onExit}>
+            <Icon name="home" size={18} /> Main menu
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Shown once, when level 100 is cleared. */
+function CompletionSheet({
+  report,
+  result,
+  onNewJourney,
+  onExit,
+}: {
+  report: FinishReport;
+  result: RunResult;
+  onNewJourney: () => void;
+  onExit: () => void;
+}) {
+  return (
+    <div className="overlay">
+      <div className="sheet result win completion">
+        <div className="result-badge">
+          <Icon name="trophy" size={30} />
+        </div>
+        <h2>Congratulations!</h2>
+        <p className="sheet-sub">You completed all {LAST_LEVEL} levels!</p>
+
+        <div className="result-stars">
+          {[0, 1, 2].map((i) => (
+            <Icon key={i} name="star" size={30} filled className="on" />
+          ))}
+        </div>
+
+        <dl className="result-rows">
+          <div>
+            <dt>Levels completed</dt>
+            <dd>
+              {LAST_LEVEL} this journey · {report.levelsCleared.toLocaleString()} total
+            </dd>
+          </div>
+          <div>
+            <dt>DIGO points collected</dt>
+            <dd>{report.lifetimePoints.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>Total completion bonuses</dt>
+            <dd className="gold">+{report.lifetimeBonus.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>DIGO tokens collected</dt>
+            <dd>
+              <Icon name="coin" size={13} /> {report.lifetimeDigo.toLocaleString()}
+            </dd>
+          </div>
+          <div className="total">
+            <dt>Journeys completed</dt>
+            <dd>{report.cyclesCompleted.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt>Final level score</dt>
+            <dd>{result.total.toLocaleString()}</dd>
+          </div>
+        </dl>
+
+        <p className="pill gold">Lifetime points and achievements are kept safe.</p>
+
+        <div className="sheet-actions">
+          <button type="button" className="btn primary" onClick={onNewJourney}>
+            <Icon name="play" size={18} filled /> Start new journey
           </button>
           <button type="button" className="btn ghost" onClick={onExit}>
             <Icon name="home" size={18} /> Main menu
