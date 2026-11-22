@@ -11,6 +11,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
+    "test": "node scripts/verify-campaign.mjs",
     "preview": "vite preview",
     "start": "node server/index.js"
   },
