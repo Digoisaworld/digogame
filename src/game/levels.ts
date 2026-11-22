@@ -1,198 +1,344 @@
-import type { LevelDef, RunResult, RewardKind, WorldId } from './types';
-import { REWARD_DIGO } from './types';
+import type {
+  DangerKind,
+  GoalKind,
+  LevelDef,
+  PowerKind,
+  RewardKind,
+  RunResult,
+  WorldId,
+} from './types';
+import { REWARD_DIGO, REWARD_POINTS } from './types';
+import { levelBonus } from './rewards';
 
 /**
- * The 12-level campaign.
+ * The 100-level DIGO campaign, organised into ten chapters of ten levels.
  *
- * Design rules baked into these numbers:
- *  - Every level is completable with the default control scheme; targets sit
- *    well inside the spawn budget of the level.
- *  - Difficulty ramps through spawn interval, fall speed, hazard bias and the
- *    simultaneous-hazard cap, never through unavoidable patterns.
- *  - Levels 1-4 teach, 5-8 pressure, 9-12 combine everything.
+ * Design rules baked into the generator below:
+ *  - Difficulty only ever ramps through spawn interval, fall speed, hazard bias
+ *    and the simultaneous-hazard cap. No level relies on unavoidable patterns.
+ *  - Every objective target is derived from that level's own spawn budget
+ *    (how many rewards can physically appear in its time limit), so a level can
+ *    never ask for more than the world can deliver.
+ *  - New rewards, hazards and power-ups unlock progressively, so chapter ten
+ *    combines everything the campaign has taught.
+ *  - Completion bonuses come from the logarithmic curve in rewards.ts.
+ *
+ * The 12-level campaign this replaced used hand-written numbers; generating the
+ * targets from the spawn budget is what makes 100 levels provably achievable.
  */
-export const LEVELS: LevelDef[] = [
+
+export const TOTAL_LEVELS = 100;
+
+interface ChapterDef {
+  name: string;
+  world: WorldId;
+  rewardLabel: string;
+  levels: string[];
+}
+
+const CHAPTER_DEFS: ChapterDef[] = [
   {
-    id: 1,
+    name: 'Coral Shore',
     world: 'island',
-    name: 'First Landing',
-    objective: 'Collect 20 DIGO',
-    goal: { kind: 'collect', target: 20 },
-    timeLimit: 75,
-    bonus: 150,
-    bonusLabel: 'Shoreline Discovery',
-    stars: [700, 1100, 1500],
-    spawn: { interval: [0.85, 1.2], speed: [4.4, 5.4], dangerBias: 0.2, maxDangers: 3 },
-    rewards: ['coin', 'coin', 'coin', 'gem'],
-    dangers: ['bomb'],
-    powers: ['shield'],
+    rewardLabel: 'Shoreline Seal',
+    levels: [
+      'First Landing',
+      'Palm Rush',
+      'Tide Runner',
+      'Shell Scramble',
+      'Lagoon Leap',
+      'Reef Dash',
+      'Sunken Steps',
+      'Coastal Sprint',
+      'Harbor Hustle',
+      'Shoreline Crown',
+    ],
   },
   {
-    id: 2,
-    world: 'island',
-    name: 'Palm Rush',
-    objective: 'Survive 60 seconds',
-    goal: { kind: 'survive', target: 60 },
-    timeLimit: 60,
-    bonus: 220,
-    bonusLabel: 'Island Explorer',
-    stars: [900, 1400, 1900],
-    spawn: { interval: [0.8, 1.1], speed: [4.8, 6.0], dangerBias: 0.26, maxDangers: 4 },
-    rewards: ['coin', 'coin', 'gem', 'crate'],
-    dangers: ['bomb', 'mine'],
-    powers: ['shield', 'magnet'],
-  },
-  {
-    id: 3,
+    name: 'Neon District',
     world: 'cyber',
-    name: 'Neon Run',
-    objective: 'Score 2,000 points',
-    goal: { kind: 'score', target: 2000 },
-    timeLimit: 70,
-    bonus: 300,
-    bonusLabel: 'Night City Runner',
-    stars: [1600, 2100, 2600],
-    spawn: { interval: [0.72, 1.0], speed: [5.2, 6.6], dangerBias: 0.3, maxDangers: 4 },
-    rewards: ['coin', 'coin', 'gem', 'crate'],
-    dangers: ['bomb', 'mine', 'barrel'],
-    powers: ['shield', 'magnet', 'double'],
+    rewardLabel: 'Neon Seal',
+    levels: [
+      'Neon Entry',
+      'Rooftop Overdrive',
+      'Circuit Sprint',
+      'Holo Dash',
+      'Data Stream',
+      'Chrome Alley',
+      'Grid Runner',
+      'Signal Chase',
+      'Night Circuit',
+      'Skyline Crown',
+    ],
   },
   {
-    id: 4,
-    world: 'cyber',
-    name: 'Rooftop Overdrive',
-    objective: 'Collect 40 DIGO',
-    goal: { kind: 'collect', target: 40 },
-    timeLimit: 80,
-    bonus: 380,
-    bonusLabel: 'Skyline Breaker',
-    stars: [2200, 2900, 3600],
-    spawn: { interval: [0.66, 0.95], speed: [5.6, 7.0], dangerBias: 0.32, maxDangers: 5 },
-    rewards: ['coin', 'coin', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel'],
-    powers: ['shield', 'magnet', 'double', 'slow'],
-  },
-  {
-    id: 5,
+    name: 'Golden Temple',
     world: 'temple',
-    name: 'Temple of Gold',
-    objective: 'Score 3,000 points',
-    goal: { kind: 'score', target: 3000 },
-    timeLimit: 75,
-    bonus: 460,
-    bonusLabel: 'Idol of Fortune',
-    stars: [2600, 3300, 4100],
-    spawn: { interval: [0.62, 0.9], speed: [5.8, 7.4], dangerBias: 0.34, maxDangers: 5 },
-    rewards: ['coin', 'coin', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel', 'meteor'],
-    powers: ['shield', 'magnet', 'double', 'slow'],
+    rewardLabel: 'Temple Seal',
+    levels: [
+      'Temple Gate',
+      'Trap Corridor',
+      'Idol Vault',
+      'Dust Steps',
+      'Serpent Hall',
+      'Gold Rush',
+      'Hidden Chamber',
+      'Sunken Altar',
+      'Relic Run',
+      'Temple Crown',
+    ],
   },
   {
-    id: 6,
-    world: 'temple',
-    name: 'Trap Corridor',
-    objective: 'Survive 75 seconds',
-    goal: { kind: 'survive', target: 75 },
-    timeLimit: 75,
-    bonus: 540,
-    bonusLabel: 'Trap Master',
-    stars: [3200, 4000, 4900],
-    spawn: { interval: [0.58, 0.86], speed: [6.0, 7.8], dangerBias: 0.36, maxDangers: 5 },
-    rewards: ['coin', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel', 'meteor'],
-    powers: ['shield', 'magnet', 'double', 'slow', 'invincible'],
-  },
-  {
-    id: 7,
+    name: 'Orbital Drift',
     world: 'space',
-    name: 'Meteor Belt',
-    objective: 'Collect 55 DIGO',
-    goal: { kind: 'collect', target: 55 },
-    timeLimit: 85,
-    bonus: 620,
-    bonusLabel: 'Orbit Pioneer',
-    stars: [3800, 4700, 5700],
-    spawn: { interval: [0.55, 0.82], speed: [6.2, 8.0], dangerBias: 0.37, maxDangers: 6 },
-    rewards: ['coin', 'coin', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel', 'meteor'],
-    powers: ['shield', 'magnet', 'double', 'slow', 'invincible'],
+    rewardLabel: 'Orbit Seal',
+    levels: [
+      'Orbit Entry',
+      'Meteor Belt',
+      'Star Drift',
+      'Gravity Well',
+      'Comet Trail',
+      'Void Runner',
+      'Satellite Sweep',
+      'Nova Dash',
+      'Deep Space',
+      'Orbit Crown',
+    ],
   },
   {
-    id: 8,
+    name: 'Ember Core',
     world: 'lava',
-    name: 'Molten Descent',
-    objective: 'Score 5,000 points',
-    goal: { kind: 'score', target: 5000 },
-    timeLimit: 80,
-    bonus: 720,
-    bonusLabel: 'Firewalker',
-    stars: [4200, 5200, 6300],
-    spawn: { interval: [0.52, 0.78], speed: [6.6, 8.4], dangerBias: 0.38, maxDangers: 6 },
-    rewards: ['coin', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel', 'meteor'],
-    powers: ['shield', 'magnet', 'double', 'slow', 'invincible'],
+    rewardLabel: 'Ember Seal',
+    levels: [
+      'Molten Descent',
+      'Core Breach',
+      'Ash Fall',
+      'Lava Leap',
+      'Furnace Run',
+      'Ember Trail',
+      'Magma Surge',
+      'Basalt Dash',
+      'Inferno Gate',
+      'Core Crown',
+    ],
   },
   {
-    id: 9,
-    world: 'lava',
-    name: 'Core Breach',
-    objective: 'Survive 80 seconds',
-    goal: { kind: 'survive', target: 80 },
-    timeLimit: 80,
-    bonus: 820,
-    bonusLabel: 'Core Survivor',
-    stars: [4800, 5900, 7100],
-    spawn: { interval: [0.48, 0.74], speed: [6.8, 8.8], dangerBias: 0.4, maxDangers: 6 },
-    rewards: ['coin', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel', 'meteor'],
-    powers: ['shield', 'magnet', 'double', 'slow', 'invincible'],
-  },
-  {
-    id: 10,
+    name: 'Prism Halls',
     world: 'crystal',
-    name: 'Crystal Vault',
-    objective: 'Collect 65 DIGO',
-    goal: { kind: 'collect', target: 65 },
-    timeLimit: 90,
-    bonus: 950,
-    bonusLabel: 'Vault Opener',
-    stars: [5400, 6600, 7900],
-    spawn: { interval: [0.46, 0.72], speed: [7.0, 9.0], dangerBias: 0.4, maxDangers: 6 },
-    rewards: ['coin', 'gem', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel', 'meteor'],
-    powers: ['shield', 'magnet', 'double', 'slow', 'invincible'],
+    rewardLabel: 'Prism Seal',
+    levels: [
+      'Crystal Vault',
+      'Facet Fall',
+      'Prism Path',
+      'Shard Sprint',
+      'Gleam Gallery',
+      'Refraction',
+      'Quartz Rush',
+      'Mirror Hall',
+      'Geode Gate',
+      'Prism Crown',
+    ],
   },
   {
-    id: 11,
+    name: 'Glacier Pass',
     world: 'frozen',
-    name: 'Glacier Gauntlet',
-    objective: 'Score 7,000 points',
-    goal: { kind: 'score', target: 7000 },
-    timeLimit: 85,
-    bonus: 1100,
-    bonusLabel: 'Frost Champion',
-    stars: [6000, 7400, 8900],
-    spawn: { interval: [0.44, 0.7], speed: [7.2, 9.4], dangerBias: 0.41, maxDangers: 7 },
-    rewards: ['coin', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel', 'meteor'],
-    powers: ['shield', 'magnet', 'double', 'slow', 'invincible'],
+    rewardLabel: 'Glacier Seal',
+    levels: [
+      'Glacier Gauntlet',
+      'Frostbite Run',
+      'Ice Shelf',
+      'Snow Squall',
+      'Avalanche Alley',
+      'Frozen Steps',
+      'Blizzard Dash',
+      'Rime Ridge',
+      'Permafrost',
+      'Glacier Crown',
+    ],
   },
   {
-    id: 12,
+    name: 'Storm Archipelago',
+    world: 'island',
+    rewardLabel: 'Storm Seal',
+    levels: [
+      'Storm Landing',
+      'Squall Line',
+      'Thunder Reef',
+      'Windward Run',
+      'Monsoon Dash',
+      'Cyclone Cove',
+      'Tempest Trail',
+      'Lightning Shoal',
+      'Hurricane Gate',
+      'Storm Crown',
+    ],
+  },
+  {
+    name: 'Chrome Spire',
+    world: 'cyber',
+    rewardLabel: 'Chrome Seal',
+    levels: [
+      'Spire Ascent',
+      'Laser Lattice',
+      'Chrome Vertigo',
+      'Pulse Grid',
+      'Overclock',
+      'Neon Spiral',
+      'Data Cascade',
+      'Circuit Zenith',
+      'Mainframe Run',
+      'Spire Crown',
+    ],
+  },
+  {
+    name: 'Frozen Crown',
     world: 'frozen',
-    name: 'DIGO Ascendant',
-    objective: 'Survive 90 seconds',
-    goal: { kind: 'survive', target: 90 },
-    timeLimit: 90,
-    bonus: 1500,
-    bonusLabel: 'DIGO Legend',
-    stars: [7000, 8600, 10400],
-    spawn: { interval: [0.42, 0.68], speed: [7.4, 9.8], dangerBias: 0.42, maxDangers: 7 },
-    rewards: ['coin', 'gem', 'crate', 'relic'],
-    dangers: ['bomb', 'mine', 'barrel', 'meteor'],
-    powers: ['shield', 'magnet', 'double', 'slow', 'invincible'],
+    rewardLabel: 'Crown Seal',
+    levels: [
+      'Crown Approach',
+      'Whiteout',
+      'Eternal Frost',
+      'Crystal Winter',
+      'Final Descent',
+      'Aurora Gate',
+      'Polar Vortex',
+      'Ice Throne',
+      'Last Light',
+      'DIGO Ascendant',
+    ],
   },
 ];
+
+const round2 = (v: number): number => Math.round(v * 100) / 100;
+const mean = (list: number[]): number => list.reduce((a, b) => a + b, 0) / Math.max(1, list.length);
+
+/** Chapter number (1..10) that owns a level. */
+export function chapterIndex(id: number): number {
+  return Math.min(CHAPTER_DEFS.length, Math.max(1, Math.ceil(id / 10)));
+}
+
+/**
+ * Time limit for a level. Longer chapters get slightly more room so the denser
+ * late-game spawns still leave a fair window to reach the objective.
+ */
+export function durationFor(id: number): number {
+  return 62 + (chapterIndex(id) - 1) * 3;
+}
+
+/** World a level is played in. Mirrored by server/campaign.js. */
+export function worldForLevel(id: number): WorldId {
+  return CHAPTER_DEFS[chapterIndex(id) - 1].world;
+}
+
+function rewardsFor(id: number): RewardKind[] {
+  const list: RewardKind[] = ['coin', 'coin', 'coin'];
+  if (id >= 3) list.push('gem');
+  if (id >= 9) list.push('crate');
+  if (id >= 21) list.push('relic');
+  return list;
+}
+
+function dangersFor(id: number): DangerKind[] {
+  const list: DangerKind[] = ['bomb'];
+  if (id >= 9) list.push('mine');
+  if (id >= 21) list.push('barrel');
+  if (id >= 41) list.push('meteor');
+  return list;
+}
+
+function powersFor(id: number): PowerKind[] {
+  const list: PowerKind[] = ['shield'];
+  if (id >= 6) list.push('magnet');
+  if (id >= 16) list.push('double');
+  if (id >= 31) list.push('slow');
+  if (id >= 51) list.push('invincible');
+  return list;
+}
+
+function spawnFor(id: number) {
+  const t = (id - 1) / Math.max(1, TOTAL_LEVELS - 1);
+  const interval = 0.86 - 0.5 * t; // 0.86s between spawns -> 0.36s
+  const speed = 4.4 + 4.2 * t; // 4.4 u/s -> 8.6 u/s
+  return {
+    interval: [round2(interval), round2(interval * 1.35)] as [number, number],
+    speed: [round2(speed), round2(speed * 1.35)] as [number, number],
+    dangerBias: round2(0.18 + 0.26 * t),
+    maxDangers: Math.round(3 + 4 * t),
+  };
+}
+
+function goalFor(
+  id: number,
+  timeLimit: number,
+  spawn: ReturnType<typeof spawnFor>,
+  rewards: RewardKind[],
+): { goal: { kind: GoalKind; target: number }; stars: [number, number, number] } {
+  const avgInterval = (spawn.interval[0] + spawn.interval[1]) / 2;
+  const spawns = timeLimit / avgInterval;
+  const rewardSpawns = spawns * (1 - spawn.dangerBias);
+  const avgPoints = mean(rewards.map((kind) => REWARD_POINTS[kind]));
+  const avgDigo = mean(rewards.map((kind) => REWARD_DIGO[kind]));
+  const expectedPoints = rewardSpawns * avgPoints;
+  const expectedDigo = rewardSpawns * avgDigo;
+
+  // Targets sit at roughly half of the theoretical payout: comfortably
+  // reachable by a focused player, never trivially automatic.
+  const kind: GoalKind = (['collect', 'survive', 'score'] as GoalKind[])[(id + chapterIndex(id)) % 3];
+  let goal: { kind: GoalKind; target: number };
+  if (kind === 'survive') {
+    goal = { kind, target: timeLimit };
+  } else if (kind === 'score') {
+    goal = { kind, target: Math.max(1200, Math.round((expectedPoints * 0.45) / 50) * 50) };
+  } else {
+    goal = { kind, target: Math.max(10, Math.round(expectedDigo * 0.45)) };
+  }
+
+  const stars: [number, number, number] = [
+    Math.round(expectedPoints * 0.55),
+    Math.round(expectedPoints * 0.75),
+    Math.round(expectedPoints * 0.92),
+  ];
+  return { goal, stars };
+}
+
+function buildLevels(): LevelDef[] {
+  const levels: LevelDef[] = [];
+  CHAPTER_DEFS.forEach((chapter, chapterIdx) => {
+    chapter.levels.forEach((name, levelIdx) => {
+      const id = chapterIdx * 10 + levelIdx + 1;
+      const timeLimit = durationFor(id);
+      const spawn = spawnFor(id);
+      const rewards = rewardsFor(id);
+      const dangers = dangersFor(id);
+      const powers = powersFor(id);
+      const { goal, stars } = goalFor(id, timeLimit, spawn, rewards);
+      levels.push({
+        id,
+        world: chapter.world,
+        name,
+        objective: goalLabelFor(goal),
+        goal,
+        timeLimit,
+        bonus: levelBonus(id),
+        bonusLabel: chapter.rewardLabel,
+        stars,
+        spawn,
+        rewards,
+        dangers,
+        powers,
+      });
+    });
+  });
+  return levels;
+}
+
+function goalLabelFor(goal: { kind: GoalKind; target: number }): string {
+  if (goal.kind === 'survive') return `Survive ${goal.target}s`;
+  if (goal.kind === 'score') return `Score ${goal.target.toLocaleString()}`;
+  return `Collect ${goal.target} DIGO`;
+}
+
+export const LEVELS: LevelDef[] = buildLevels();
 
 export const LEVEL_MAP: Record<number, LevelDef> = LEVELS.reduce(
   (acc, level) => {
@@ -204,6 +350,34 @@ export const LEVEL_MAP: Record<number, LevelDef> = LEVELS.reduce(
 
 export const FIRST_LEVEL = 1;
 export const LAST_LEVEL = LEVELS.length;
+
+export interface Chapter {
+  index: number;
+  name: string;
+  world: WorldId;
+  rewardLabel: string;
+  from: number;
+  to: number;
+  levels: LevelDef[];
+}
+
+export const CHAPTERS: Chapter[] = CHAPTER_DEFS.map((chapter, idx) => {
+  const from = idx * 10 + 1;
+  const to = from + 9;
+  return {
+    index: idx + 1,
+    name: chapter.name,
+    world: chapter.world,
+    rewardLabel: chapter.rewardLabel,
+    from,
+    to,
+    levels: LEVELS.filter((level) => level.id >= from && level.id <= to),
+  };
+});
+
+export function chapterOf(id: number): Chapter {
+  return CHAPTERS[chapterIndex(id) - 1] ?? CHAPTERS[0];
+}
 
 export function levelById(id: number): LevelDef {
   return LEVEL_MAP[id] ?? LEVELS[0];
@@ -221,9 +395,7 @@ export function starsFor(level: LevelDef, score: number): number {
 }
 
 export function goalLabel(level: LevelDef): string {
-  if (level.goal.kind === 'survive') return `Survive ${level.goal.target}s`;
-  if (level.goal.kind === 'score') return `Score ${level.goal.target.toLocaleString()}`;
-  return `Collect ${level.goal.target} DIGO`;
+  return goalLabelFor(level.goal);
 }
 
 /** Total DIGO currency value of a collection log. */

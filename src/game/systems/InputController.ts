@@ -1,23 +1,41 @@
 import { PLAYER } from '../types';
 
 /**
- * Touch / mouse / keyboard input.
+ * Finger controls for DIGO EVOLUTION.
  *
- * The primary control is a large hold-and-drag pad: while a finger is held the
- * character follows the horizontal finger position absolutely, so movement
- * continues without interruption and never gets "stuck".
+ * The character is steered directly with the finger:
+ *  - drag / swipe left or right moves DIGO left or right, following the finger
+ *    delta relative to where the touch started (so a swipe is a real movement
+ *    command and the character never teleports under the thumb);
+ *  - swiping up jumps, once per gesture;
+ *  - releasing, cancelling or losing capture stops movement immediately, so
+ *    DIGO can never get "stuck" running;
+ *  - desktop keeps Arrow/A/D and Space/W/ArrowUp.
+ *
+ * Movement speed, jump height and physics are untouched: this controller only
+ * produces the same `targetX` / `direction` / `consumeJump()` signals the engine
+ * already consumed.
  *
  * Robustness rules:
- *  - Pointer Events with pointer capture, one tracked pointer id only.
- *  - pointerup / pointercancel / lostpointercapture all release the pad.
- *  - touch-action:none + preventDefault stop scrolling and text selection.
- *  - Optional left/right buttons and keyboard set a direction instead.
+ *  - Pointer Events with pointer capture, exactly one tracked pointer id.
+ *  - pointerup / pointercancel / lostpointercapture all release the gesture.
+ *  - touch-action:none plus preventDefault stop scrolling and text selection.
+ *  - Multi-touch: extra fingers are ignored while a gesture is active.
  */
 
 export interface InputOptions {
-  drag: boolean;
-  buttons: boolean;
+  /** Live world x of the character, used as the base for relative swipes. */
+  getX?: () => number;
 }
+
+/** Fraction of the pad width that equals a full lane sweep. */
+const SWIPE_SENSITIVITY = 1;
+
+/** Upward travel (CSS px) that counts as a jump swipe. */
+const JUMP_SWIPE_PX = 42;
+
+/** Horizontal travel (CSS px) below which a drag is treated as a tap. */
+const DEAD_ZONE_PX = 4;
 
 export class InputController {
   private pad: HTMLElement | null = null;
@@ -25,21 +43,25 @@ export class InputController {
   private target: number | null = null;
   private dir = 0;
   private jumpQueued = false;
+  private jumpedThisGesture = false;
+  private startX = 0;
+  private startY = 0;
+  private baseX = 0;
   private readonly keys = new Set<string>();
   private readonly lane: number;
   private readonly options: InputOptions;
   private bound = false;
 
-  constructor(options: InputOptions) {
+  constructor(options: InputOptions = {}) {
     this.options = options;
     this.lane = PLAYER.lane;
   }
 
-  /* ----------------------------- pad ------------------------------ */
+  /* ----------------------------- gestures ------------------------- */
 
   attachPad(el: HTMLElement | null): void {
     this.detachPad();
-    if (!el || !this.options.drag) return;
+    if (!el) return;
     this.pad = el;
     el.addEventListener('pointerdown', this.onPointerDown);
     el.addEventListener('pointermove', this.onPointerMove);
@@ -78,38 +100,64 @@ export class InputController {
     e.preventDefault();
   };
 
-  private positionFromEvent(e: PointerEvent): number {
-    const el = this.pad;
-    if (!el) return 0;
-    const rect = el.getBoundingClientRect();
-    if (rect.width <= 0) return 0;
-    const t = (e.clientX - rect.left) / rect.width;
-    return Math.max(-1, Math.min(1, t * 2 - 1)) * this.lane;
+  private currentX(): number {
+    const value = this.options.getX?.();
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    return this.target ?? 0;
+  }
+
+  private padWidth(): number {
+    const rect = this.pad?.getBoundingClientRect();
+    return rect && rect.width > 0 ? rect.width : 360;
   }
 
   private onPointerDown = (e: PointerEvent): void => {
-    if (this.pointerId !== null) return; // ignore extra fingers
+    if (this.pointerId !== null) return; // one finger steers DIGO
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
     this.pointerId = e.pointerId;
+    this.startX = e.clientX;
+    this.startY = e.clientY;
+    this.baseX = this.currentX();
+    this.jumpedThisGesture = false;
     try {
       this.pad?.setPointerCapture(e.pointerId);
     } catch {
       /* capture is best-effort */
     }
-    this.target = this.positionFromEvent(e);
   };
 
   private onPointerMove = (e: PointerEvent): void => {
     if (this.pointerId !== e.pointerId) return;
     e.preventDefault();
-    this.target = this.positionFromEvent(e);
+
+    const dx = e.clientX - this.startX;
+    const dy = e.clientY - this.startY;
+
+    // Swipe up = jump. Only once per gesture, and only when the gesture is
+    // clearly more vertical than horizontal.
+    if (!this.jumpedThisGesture && dy <= -JUMP_SWIPE_PX && Math.abs(dy) > Math.abs(dx) * 1.1) {
+      this.jumpedThisGesture = true;
+      this.jumpQueued = true;
+      // Rebase so the same finger can steer sideways after the jump.
+      this.startX = e.clientX;
+      this.startY = e.clientY;
+      this.baseX = this.currentX();
+      return;
+    }
+
+    if (Math.abs(dx) <= DEAD_ZONE_PX) return;
+
+    // Relative mapping: a swipe of one pad width sweeps the whole lane.
+    const worldDelta = (dx / this.padWidth()) * 2 * this.lane * SWIPE_SENSITIVITY;
+    this.target = Math.max(-this.lane, Math.min(this.lane, this.baseX + worldDelta));
   };
 
   private onPointerUp = (e: PointerEvent): void => {
     if (this.pointerId !== null && e.pointerId !== this.pointerId) return;
     this.pointerId = null;
     this.target = null;
+    this.jumpedThisGesture = false;
     try {
       if (this.pad?.hasPointerCapture(e.pointerId)) {
         this.pad.releasePointerCapture(e.pointerId);
@@ -152,11 +200,12 @@ export class InputController {
     this.dir = 0;
     this.target = null;
     this.pointerId = null;
+    this.jumpedThisGesture = false;
   };
 
-  /* ---------------------------- buttons --------------------------- */
+  /* ------------------------------ api ----------------------------- */
 
-  /** Called by the on-screen arrow buttons (held). */
+  /** Direct direction control (keyboard fallback / programmatic). */
   setDirection(dir: number): void {
     this.dir = Math.max(-1, Math.min(1, dir));
   }
@@ -177,7 +226,7 @@ export class InputController {
     return true;
   }
 
-  /** Absolute target position, or null when the pad is not held. */
+  /** Target position from the active gesture, or null when not held. */
   get targetX(): number | null {
     return this.target;
   }
