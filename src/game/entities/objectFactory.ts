@@ -1,810 +1,669 @@
 import * as THREE from 'three';
-import type { Category, FallingKind } from '../types';
-import { categoryOf } from '../types';
-
-/* ------------------------------------------------------------------ *
- * Shared texture helpers (generated once, no binary assets needed)
- * ------------------------------------------------------------------ */
-
-const glowCache = new Map<string, THREE.Texture>();
-
-export function glowTexture(color: string): THREE.Texture {
-  const cached = glowCache.get(color);
-  if (cached) return cached;
-  const size = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  grad.addColorStop(0, 'rgba(255,255,255,0.95)');
-  grad.addColorStop(0.28, color);
-  grad.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, size, size);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  glowCache.set(color, tex);
-  return tex;
-}
-
-let coinFace: THREE.Texture | null = null;
-function coinFaceTexture(): THREE.Texture {
-  if (coinFace) return coinFace;
-  const size = 256;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  const grad = ctx.createRadialGradient(size / 2, size / 2, 10, size / 2, size / 2, size / 2);
-  grad.addColorStop(0, '#fff6c8');
-  grad.addColorStop(0.55, '#ffcc33');
-  grad.addColorStop(1, '#b47800');
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(size / 2, size / 2, size / 2 - 6, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.lineWidth = 10;
-  ctx.strokeStyle = '#fff2b0';
-  ctx.stroke();
-  ctx.fillStyle = '#6b4400';
-  ctx.font = 'bold 150px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('D', size / 2, size / 2 + 8);
-  coinFace = new THREE.CanvasTexture(canvas);
-  coinFace.colorSpace = THREE.SRGBColorSpace;
-  return coinFace;
-}
-
-function warnTexture(): THREE.Texture {
-  const size = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#ff2b2b';
-  ctx.fillRect(0, 0, size, size);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 108px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('!', size / 2, size / 2 + 6);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-/* ------------------------------------------------------------------ *
- * Falling entity
- * ------------------------------------------------------------------ */
-
-export interface FallingEntity {
-  kind: FallingKind;
-  category: Category;
-  group: THREE.Group;
-  /** Collision radius in world units. */
-  radius: number;
-  /** Fall speed in units/second. */
-  speed: number;
-  /** Horizontal drift in units/second. */
-  drift: number;
-  spinSpeed: number;
-  x: number;
-  y: number;
-  z: number;
-  alive: boolean;
-  /** Set when a magnet pulls the object. */
-  magnetized: boolean;
-  age: number;
-  animate: (t: number, dt: number, entity: FallingEntity) => void;
-  dispose: () => void;
-}
-
-interface Built {
-  group: THREE.Group;
-  radius: number;
-  animate: (t: number, dt: number, e: FallingEntity) => void;
-}
-
-const disposables = new WeakMap<THREE.Group, Array<{ dispose: () => void }>>();
-
-function track(group: THREE.Group, ...items: Array<{ dispose: () => void }>): void {
-  const list = disposables.get(group) ?? [];
-  list.push(...items);
-  disposables.set(group, list);
-}
-
-function sprite(group: THREE.Group, color: string, scale: number, opacity = 0.85): THREE.Sprite {
-  const mat = new THREE.SpriteMaterial({
-    map: glowTexture(color),
-    transparent: true,
-    opacity,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const s = new THREE.Sprite(mat);
-  s.scale.setScalar(scale);
-  group.add(s);
-  track(group, mat);
-  return s;
-}
-
-/* ------------------------------------------------------------------ *
- * REWARDS — bright, valuable, glowing, unmistakably collectible
- * ------------------------------------------------------------------ */
-
-function buildCoin(): Built {
-  const group = new THREE.Group();
-  const goldMat = new THREE.MeshStandardMaterial({
-    color: 0xffc93c,
-    metalness: 0.95,
-    roughness: 0.22,
-    emissive: 0x7a4c00,
-  });
-  const faceMat = new THREE.MeshBasicMaterial({ map: coinFaceTexture() });
-  const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.44, 0.1, 36), goldMat);
-  disc.rotation.x = Math.PI / 2;
-  group.add(disc);
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.055, 10, 36), goldMat);
-  group.add(rim);
-  for (const z of [0.055, -0.055]) {
-    const face = new THREE.Mesh(new THREE.CircleGeometry(0.4, 32), faceMat);
-    face.position.z = z;
-    if (z < 0) face.rotation.y = Math.PI;
-    group.add(face);
-  }
-  const glow = sprite(group, '#ffd54a', 1.9, 0.55);
-  track(group, goldMat, faceMat, disc.geometry, rim.geometry);
-  return {
-    group,
-    radius: 0.5,
-    animate: (t) => {
-      group.rotation.y = t * 2.6;
-      group.rotation.z = Math.sin(t * 1.4) * 0.12;
-      glow.material.opacity = 0.4 + Math.sin(t * 5) * 0.12;
-    },
-  };
-}
-
-function buildDiamond(): Built {
-  const group = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x8ce9ff,
-    metalness: 0.35,
-    roughness: 0.05,
-    transparent: true,
-    opacity: 0.86,
-    emissive: 0x1f8fdd,
-    emissiveIntensity: 0.85,
-    flatShading: true,
-  });
-  const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.5, 0), mat);
-  core.scale.set(1, 1.35, 1);
-  group.add(core);
-  const innerMat = new THREE.MeshBasicMaterial({ color: 0xd6fbff });
-  const inner = new THREE.Mesh(new THREE.OctahedronGeometry(0.2, 0), innerMat);
-  inner.scale.set(1, 1.5, 1);
-  group.add(inner);
-  const glow = sprite(group, '#63e6ff', 2.1, 0.7);
-  track(group, mat, innerMat, core.geometry, inner.geometry);
-  return {
-    group,
-    radius: 0.52,
-    animate: (t) => {
-      core.rotation.y = t * 1.5;
-      inner.rotation.y = -t * 2.4;
-      glow.material.opacity = 0.55 + Math.sin(t * 6) * 0.18;
-      const s = 1 + Math.sin(t * 4) * 0.04;
-      core.scale.set(s, 1.35, s);
-    },
-  };
-}
-
-function buildEnergy(): Built {
-  const group = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x4dffa6,
-    metalness: 0.4,
-    roughness: 0.15,
-    emissive: 0x18c47a,
-    emissiveIntensity: 1.1,
-    flatShading: true,
-  });
-  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), mat);
-  group.add(core);
-  const shellMat = new THREE.MeshBasicMaterial({
-    color: 0xd9fff0,
-    wireframe: true,
-    transparent: true,
-    opacity: 0.55,
-  });
-  const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(0.52, 0), shellMat);
-  group.add(shell);
-  const orbitMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const orbiters: THREE.Mesh[] = [];
-  for (let i = 0; i < 3; i += 1) {
-    const o = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 8), orbitMat);
-    orbiters.push(o);
-    group.add(o);
-  }
-  const glow = sprite(group, '#4dffa6', 2, 0.6);
-  track(group, mat, shellMat, orbitMat, core.geometry, shell.geometry);
-  return {
-    group,
-    radius: 0.5,
-    animate: (t) => {
-      core.rotation.y = t * 1.8;
-      shell.rotation.x = t * 1.1;
-      shell.rotation.y = -t * 0.8;
-      orbiters.forEach((o, i) => {
-        const a = t * 2.4 + (i / 3) * Math.PI * 2;
-        o.position.set(Math.cos(a) * 0.62, Math.sin(a * 1.3) * 0.3, Math.sin(a) * 0.62);
-      });
-      glow.material.opacity = 0.45 + Math.sin(t * 7) * 0.15;
-    },
-  };
-}
-
-function buildChest(): Built {
-  const group = new THREE.Group();
-  const woodMat = new THREE.MeshStandardMaterial({
-    color: 0xb4691f,
-    roughness: 0.6,
-    metalness: 0.2,
-  });
-  const goldMat = new THREE.MeshStandardMaterial({
-    color: 0xffc93c,
-    metalness: 1,
-    roughness: 0.2,
-    emissive: 0x6b4a00,
-  });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.46, 0.56), woodMat);
-  body.position.y = -0.1;
-  group.add(body);
-  const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.82, 16, 1, false, 0, Math.PI), goldMat);
-  lid.rotation.z = Math.PI / 2;
-  lid.position.y = 0.13;
-  lid.scale.set(1, 1, 0.9);
-  group.add(lid);
-  const bandMat = goldMat;
-  for (const x of [-0.26, 0.26]) {
-    const band = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.5, 0.58), bandMat);
-    band.position.set(x, -0.08, 0);
-    group.add(band);
-  }
-  const lock = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.2, 0.1), goldMat);
-  lock.position.set(0, -0.06, 0.3);
-  group.add(lock);
-  const keyhole = new THREE.Mesh(new THREE.CircleGeometry(0.04, 12), new THREE.MeshBasicMaterial({ color: 0x2a1600 }));
-  keyhole.position.set(0, -0.06, 0.36);
-  group.add(keyhole);
-  const glow = sprite(group, '#ffb020', 2.2, 0.55);
-  track(group, woodMat, goldMat, body.geometry, lid.geometry, lock.geometry, keyhole.geometry);
-  return {
-    group,
-    radius: 0.6,
-    animate: (t) => {
-      group.rotation.y = Math.sin(t * 1.3) * 0.5;
-      group.rotation.z = Math.sin(t * 2) * 0.06;
-      glow.material.opacity = 0.4 + Math.sin(t * 4) * 0.15;
-    },
-  };
-}
-
-function buildLegendary(): Built {
-  const group = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xb46bff,
-    metalness: 0.6,
-    roughness: 0.15,
-    emissive: 0x7b1fd4,
-    emissiveIntensity: 1.3,
-    flatShading: true,
-  });
-  const core = new THREE.Mesh(new THREE.DodecahedronGeometry(0.48, 0), mat);
-  group.add(core);
-  const ringMat = new THREE.MeshStandardMaterial({
-    color: 0xffd54a,
-    metalness: 1,
-    roughness: 0.15,
-    emissive: 0x8a6b00,
-  });
-  const ringA = new THREE.Mesh(new THREE.TorusGeometry(0.66, 0.045, 8, 40), ringMat);
-  const ringB = new THREE.Mesh(new THREE.TorusGeometry(0.6, 0.035, 8, 40), ringMat);
-  ringB.rotation.x = Math.PI / 2;
-  group.add(ringA, ringB);
-  const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const sparks: THREE.Mesh[] = [];
-  for (let i = 0; i < 4; i += 1) {
-    const s = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), sparkMat);
-    sparks.push(s);
-    group.add(s);
-  }
-  const glow = sprite(group, '#c07bff', 2.8, 0.8);
-  track(group, mat, ringMat, sparkMat, core.geometry, ringA.geometry, ringB.geometry);
-  return {
-    group,
-    radius: 0.6,
-    animate: (t) => {
-      core.rotation.y = t * 1.1;
-      core.rotation.x = t * 0.7;
-      ringA.rotation.z = t * 1.7;
-      ringB.rotation.z = -t * 1.3;
-      ringA.rotation.x = Math.PI / 2.4 + Math.sin(t) * 0.2;
-      sparks.forEach((s, i) => {
-        const a = t * 3 + (i / 4) * Math.PI * 2;
-        s.position.set(Math.cos(a) * 0.8, Math.sin(a * 1.6) * 0.55, Math.sin(a) * 0.8);
-      });
-      glow.material.opacity = 0.6 + Math.sin(t * 5) * 0.2;
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ *
- * DANGERS — dark, sharp, explosive, unmistakably hostile
- * ------------------------------------------------------------------ */
-
-function buildBomb(): Built {
-  const group = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: 0x14161c,
-    metalness: 0.85,
-    roughness: 0.28,
-    emissive: 0x1a0000,
-  });
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.5, 26, 20), bodyMat);
-  group.add(body);
-  const fuseMat = new THREE.MeshStandardMaterial({ color: 0x8a7350, roughness: 0.9 });
-  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.36, 8), fuseMat);
-  fuse.position.set(0.06, 0.58, 0);
-  fuse.rotation.z = -0.35;
-  group.add(fuse);
-  const sparkMat = new THREE.MeshBasicMaterial({ color: 0xfff0a0 });
-  const spark = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), sparkMat);
-  spark.position.set(0.13, 0.78, 0);
-  group.add(spark);
-  const sparkGlow = sprite(group, '#ffcc00', 0.9, 0.9);
-  sparkGlow.position.copy(spark.position);
-
-  const ringMat = new THREE.MeshBasicMaterial({
-    color: 0xff2b2b,
-    transparent: true,
-    opacity: 0.9,
-    blending: THREE.AdditiveBlending,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.045, 8, 40), ringMat);
-  ring.rotation.x = Math.PI / 2;
-  group.add(ring);
-
-  const warnMat = new THREE.MeshBasicMaterial({
-    map: warnTexture(),
-    transparent: true,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
-  const warn = new THREE.Mesh(new THREE.CircleGeometry(0.17, 3), warnMat);
-  warn.position.set(0, 0.05, 0.51);
-  group.add(warn);
-
-  const glow = sprite(group, '#ff2b2b', 2.6, 0.5);
-  track(group, bodyMat, fuseMat, sparkMat, ringMat, warnMat, body.geometry, fuse.geometry, spark.geometry, ring.geometry, warn.geometry);
-  return {
-    group,
-    radius: 0.55,
-    animate: (t, _dt, e) => {
-      group.rotation.y = Math.sin(t * 2) * 0.3;
-      const pulse = 0.5 + 0.5 * Math.sin(t * 9);
-      glow.material.opacity = 0.25 + pulse * 0.5;
-      ring.scale.setScalar(1 + pulse * 0.16);
-      ringMat.opacity = 0.5 + pulse * 0.5;
-      spark.scale.setScalar(0.8 + pulse * 0.5);
-      sparkGlow.material.opacity = 0.5 + pulse * 0.5;
-      // Fuse sparks trail behind the falling bomb.
-      group.rotation.z = Math.sin(t * 3 + e.y) * 0.15;
-    },
-  };
-}
-
-function buildMeteor(): Built {
-  const group = new THREE.Group();
-  const rockMat = new THREE.MeshStandardMaterial({
-    color: 0x4a2a1a,
-    roughness: 0.95,
-    metalness: 0.15,
-    flatShading: true,
-    emissive: 0x3d0a00,
-    emissiveIntensity: 0.9,
-  });
-  const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.5, 0), rockMat);
-  rock.scale.set(1, 0.95, 1);
-  group.add(rock);
-  const flameMat = new THREE.MeshBasicMaterial({
-    color: 0xff7a18,
-    transparent: true,
-    opacity: 0.85,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const flame = new THREE.Mesh(new THREE.ConeGeometry(0.46, 1.5, 10, 1, true), flameMat);
-  flame.position.y = 0.95;
-  flame.rotation.x = Math.PI;
-  group.add(flame);
-  const innerFlameMat = new THREE.MeshBasicMaterial({
-    color: 0xffe066,
-    transparent: true,
-    opacity: 0.9,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const innerFlame = new THREE.Mesh(new THREE.ConeGeometry(0.24, 1.0, 8, 1, true), innerFlameMat);
-  innerFlame.position.y = 0.75;
-  innerFlame.rotation.x = Math.PI;
-  group.add(innerFlame);
-  const glow = sprite(group, '#ff7a18', 2.8, 0.75);
-  glow.position.y = 0.4;
-  const smoke = sprite(group, '#3a2b26', 2.2, 0.35);
-  smoke.position.y = 1.1;
-  track(group, rockMat, flameMat, innerFlameMat, rock.geometry, flame.geometry, innerFlame.geometry);
-  return {
-    group,
-    radius: 0.58,
-    animate: (t) => {
-      rock.rotation.y = t * 1.4;
-      rock.rotation.x = t * 0.9;
-      const flicker = 0.75 + Math.sin(t * 18) * 0.2;
-      flameMat.opacity = flicker * 0.9;
-      flame.scale.set(1 + Math.sin(t * 12) * 0.08, 1 + Math.sin(t * 9) * 0.12, 1);
-      innerFlame.scale.y = 1 + Math.sin(t * 15) * 0.15;
-      glow.material.opacity = 0.6 + Math.sin(t * 10) * 0.18;
-    },
-  };
-}
-
-function buildElectric(): Built {
-  const group = new THREE.Group();
-  const coreMat = new THREE.MeshStandardMaterial({
-    color: 0xff2d55,
-    emissive: 0xff2d55,
-    emissiveIntensity: 1.6,
-    roughness: 0.3,
-    metalness: 0.4,
-  });
-  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.34, 1), coreMat);
-  group.add(core);
-  const arcMat = new THREE.MeshBasicMaterial({
-    color: 0xffd0d8,
-    transparent: true,
-    opacity: 0.9,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const arcs: THREE.Mesh[] = [];
-  for (let i = 0; i < 5; i += 1) {
-    const arc = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.7, 4), arcMat);
-    arcs.push(arc);
-    group.add(arc);
-  }
-  const shellMat = new THREE.MeshBasicMaterial({
-    color: 0xff2d55,
-    wireframe: true,
-    transparent: true,
-    opacity: 0.7,
-  });
-  const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(0.56, 0), shellMat);
-  group.add(shell);
-  const glow = sprite(group, '#ff2d55', 2.6, 0.7);
-  track(group, coreMat, arcMat, shellMat, core.geometry, shell.geometry);
-  return {
-    group,
-    radius: 0.55,
-    animate: (t) => {
-      core.rotation.y = t * 3;
-      shell.rotation.x = t * 1.4;
-      shell.rotation.z = -t * 1.1;
-      arcs.forEach((arc, i) => {
-        const a = t * 6 + (i / 5) * Math.PI * 2;
-        arc.position.set(Math.cos(a) * 0.42, Math.sin(a * 1.7) * 0.42, Math.sin(a) * 0.42);
-        arc.rotation.set(a, a * 0.7, a * 1.3);
-        arc.scale.y = 0.7 + Math.abs(Math.sin(t * 20 + i)) * 0.8;
-      });
-      glow.material.opacity = 0.5 + Math.abs(Math.sin(t * 14)) * 0.4;
-      coreMat.emissiveIntensity = 1.2 + Math.abs(Math.sin(t * 16)) * 0.9;
-    },
-  };
-}
-
-function buildSpike(): Built {
-  const group = new THREE.Group();
-  const metalMat = new THREE.MeshStandardMaterial({
-    color: 0x8f9aa8,
-    metalness: 0.95,
-    roughness: 0.25,
-  });
-  const tipMat = new THREE.MeshStandardMaterial({
-    color: 0xff2b2b,
-    emissive: 0xb00000,
-    emissiveIntensity: 1.1,
-    metalness: 0.5,
-    roughness: 0.4,
-  });
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.42, 0.18, 8), metalMat);
-  base.position.y = -0.26;
-  group.add(base);
-  const positions: Array<[number, number, number, number]> = [
-    [0, 0, 0, 1.15],
-    [-0.24, -0.05, 0.06, 0.85],
-    [0.24, -0.05, -0.06, 0.85],
-    [0.05, -0.05, 0.24, 0.8],
-    [-0.05, -0.05, -0.24, 0.8],
-  ];
-  const spikeGeo = new THREE.ConeGeometry(0.13, 0.8, 6);
-  const tipGeo = new THREE.ConeGeometry(0.075, 0.2, 6);
-  positions.forEach(([x, y, z, scale]) => {
-    const spike = new THREE.Mesh(spikeGeo, metalMat);
-    spike.position.set(x, y + 0.05, z);
-    spike.scale.setScalar(scale);
-    spike.rotation.z = x * 0.5;
-    spike.rotation.x = -z * 0.5;
-    group.add(spike);
-    const tip = new THREE.Mesh(tipGeo, tipMat);
-    tip.position.set(x + x * 0.12, y + 0.05 + 0.4 * scale, z + z * 0.12);
-    tip.rotation.copy(spike.rotation);
-    group.add(tip);
-  });
-  const glow = sprite(group, '#ff2b2b', 2.1, 0.45);
-  track(group, metalMat, tipMat, spikeGeo, tipGeo, base.geometry);
-  return {
-    group,
-    radius: 0.55,
-    animate: (t) => {
-      group.rotation.y = t * 1.2;
-      group.rotation.z = Math.sin(t * 2) * 0.08;
-      glow.material.opacity = 0.3 + Math.abs(Math.sin(t * 4)) * 0.3;
-    },
-  };
-}
-
-function buildEnemy(): Built {
-  const group = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: 0x7a1024,
-    roughness: 0.55,
-    metalness: 0.25,
-    emissive: 0x3a0010,
-    emissiveIntensity: 0.8,
-  });
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.44, 20, 16), bodyMat);
-  body.scale.set(1, 1.1, 1);
-  group.add(body);
-  const hornMat = new THREE.MeshStandardMaterial({
-    color: 0xf2e6c8,
-    roughness: 0.5,
-    metalness: 0.2,
-  });
-  for (const side of [-1, 1]) {
-    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.4, 8), hornMat);
-    horn.position.set(0.24 * side, 0.44, 0);
-    horn.rotation.z = -0.4 * side;
-    group.add(horn);
-  }
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffe14d });
-  const pupilMat = new THREE.MeshBasicMaterial({ color: 0x220000 });
-  for (const side of [-1, 1]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), eyeMat);
-    eye.position.set(0.16 * side, 0.08, 0.38);
-    group.add(eye);
-    const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), pupilMat);
-    pupil.position.set(0.16 * side, 0.08, 0.47);
-    group.add(pupil);
-  }
-  const mouthMat = new THREE.MeshBasicMaterial({ color: 0x1a0000 });
-  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.1, 0.06), mouthMat);
-  mouth.position.set(0, -0.2, 0.42);
-  group.add(mouth);
-  const glow = sprite(group, '#ff2d55', 2.0, 0.4);
-  track(group, bodyMat, hornMat, eyeMat, pupilMat, mouthMat, body.geometry, mouth.geometry);
-  return {
-    group,
-    radius: 0.55,
-    animate: (t) => {
-      body.scale.set(1 + Math.sin(t * 8) * 0.05, 1.1 - Math.sin(t * 8) * 0.04, 1);
-      group.rotation.z = Math.sin(t * 5) * 0.18;
-      group.rotation.y = Math.sin(t * 2.2) * 0.35;
-      glow.material.opacity = 0.25 + Math.abs(Math.sin(t * 6)) * 0.35;
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ *
- * POWER-UPS — colour-coded orbs with a unique orbit signature
- * ------------------------------------------------------------------ */
-
-const POWER_COLORS: Record<string, string> = {
-  shield: '#4da3ff',
-  magnet: '#ff5fd2',
-  slow: '#8ef0ff',
-  double: '#ffd166',
-  speed: '#7cff6b',
-  invincible: '#ffffff',
-};
-
-function buildPower(kind: FallingKind): Built {
-  const color = POWER_COLORS[kind] ?? '#ffffff';
-  const group = new THREE.Group();
-  const coreMat = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(color),
-    emissive: new THREE.Color(color),
-    emissiveIntensity: 1.2,
-    metalness: 0.4,
-    roughness: 0.2,
-  });
-  const core = new THREE.Mesh(new THREE.SphereGeometry(0.34, 20, 16), coreMat);
-  group.add(core);
-  const shellMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(color),
-    wireframe: true,
-    transparent: true,
-    opacity: 0.65,
-  });
-  const shell = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5, 0), shellMat);
-  group.add(shell);
-  const ringMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.85,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.03, 8, 36), ringMat);
-  group.add(ring);
-  // Distinct inner glyph so power-ups never read as rewards or dangers.
-  const glyphMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  let glyph: THREE.Mesh;
-  if (kind === 'shield') glyph = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.05, 8, 20), glyphMat);
-  else if (kind === 'magnet') glyph = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.05, 8, 20, Math.PI), glyphMat);
-  else if (kind === 'slow') glyph = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.3, 4), glyphMat);
-  else if (kind === 'double') {
-    glyph = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.26, 0.06), glyphMat);
-    glyph.rotation.z = Math.PI / 4;
-  } else if (kind === 'speed') glyph = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.34, 3), glyphMat);
-  else glyph = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), glyphMat);
-  group.add(glyph);
-  const glow = sprite(group, color, 2.4, 0.75);
-  track(group, coreMat, shellMat, ringMat, glyphMat, core.geometry, shell.geometry, ring.geometry, glyph.geometry);
-  return {
-    group,
-    radius: 0.55,
-    animate: (t) => {
-      core.rotation.y = t * 2;
-      shell.rotation.y = -t * 1.6;
-      shell.rotation.x = t * 0.9;
-      ring.rotation.x = Math.PI / 2 + Math.sin(t * 2) * 0.3;
-      ring.rotation.z = t * 1.4;
-      glyph.rotation.y = t * 2.6;
-      glow.material.opacity = 0.55 + Math.sin(t * 6) * 0.2;
-      coreMat.emissiveIntensity = 1 + Math.sin(t * 5) * 0.3;
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ *
- * BOSS — the DIGO Guardian
- * ------------------------------------------------------------------ */
-
-export function buildBoss(): Built {
-  const group = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: 0x2b1030,
-    metalness: 0.6,
-    roughness: 0.35,
-    emissive: 0x8b1fd4,
-    emissiveIntensity: 0.5,
-  });
-  const body = new THREE.Mesh(new THREE.SphereGeometry(1.05, 28, 22), bodyMat);
-  group.add(body);
-  const plateMat = new THREE.MeshStandardMaterial({
-    color: 0xff2d55,
-    emissive: 0xff2d55,
-    emissiveIntensity: 0.9,
-    metalness: 0.7,
-    roughness: 0.3,
-  });
-  const plate = new THREE.Mesh(new THREE.TorusGeometry(1.02, 0.09, 10, 44), plateMat);
-  plate.rotation.x = Math.PI / 2.3;
-  group.add(plate);
-  const hornMat = new THREE.MeshStandardMaterial({ color: 0xffe6b0, metalness: 0.6, roughness: 0.35 });
-  const hornGeo = new THREE.ConeGeometry(0.2, 0.9, 8);
-  for (const side of [-1, 1]) {
-    const horn = new THREE.Mesh(hornGeo, hornMat);
-    horn.position.set(0.62 * side, 0.9, 0);
-    horn.rotation.z = -0.5 * side;
-    group.add(horn);
-  }
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff3355 });
-  const eyes: THREE.Mesh[] = [];
-  for (const [x, y] of [
-    [-0.36, 0.24],
-    [0.36, 0.24],
-    [0, -0.1],
-  ]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.16, 14, 12), eyeMat);
-    eye.position.set(x, y, 0.95);
-    eyes.push(eye);
-    group.add(eye);
-  }
-  const glow = sprite(group, '#ff2d55', 5, 0.5);
-  track(group, bodyMat, plateMat, hornMat, eyeMat, body.geometry, plate.geometry, hornGeo);
-  return {
-    group,
-    radius: 1.15,
-    animate: (t) => {
-      group.rotation.y = Math.sin(t * 0.9) * 0.4;
-      group.position.y += Math.sin(t * 2) * 0.004;
-      plate.rotation.z = t * 0.8;
-      body.scale.set(1 + Math.sin(t * 3) * 0.03, 1 - Math.sin(t * 3) * 0.03, 1);
-      eyes.forEach((e, i) => {
-        e.scale.setScalar(0.85 + Math.abs(Math.sin(t * 4 + i)) * 0.35);
-      });
-      glow.material.opacity = 0.35 + Math.abs(Math.sin(t * 2.5)) * 0.35;
-    },
-  };
-}
-
-/* ------------------------------------------------------------------ *
- * Factory with pooling support
- * ------------------------------------------------------------------ */
-
-const builders: Record<FallingKind, () => Built> = {
-  coin: buildCoin,
-  diamond: buildDiamond,
-  energy: buildEnergy,
-  chest: buildChest,
-  legendary: buildLegendary,
-  bomb: buildBomb,
-  meteor: buildMeteor,
-  electric: buildElectric,
-  spike: buildSpike,
-  enemy: buildEnemy,
-  shield: () => buildPower('shield'),
-  magnet: () => buildPower('magnet'),
-  slow: () => buildPower('slow'),
-  double: () => buildPower('double'),
-  speed: () => buildPower('speed'),
-  invincible: () => buildPower('invincible'),
-};
+import type { FallingKind, DangerKind, PowerKind, RewardKind } from '../types';
+import { DANGER_META, POWER_META, REWARD_META } from '../types';
+import { glowTexture, hazardTexture, logoTexture, noiseTexture } from '../render/textures';
 
 /**
- * Creates (or recycles) a falling object. Objects are pooled per kind by the
- * SpawnManager, so the geometry/material cost is paid once.
+ * Falling object art direction.
+ *
+ * Rewards are warm, bright, gold/cyan and always carry an upward glow.
+ * Hazards are dark, spiky, red-lit and always carry a pulsing red warning ring.
+ * The two families can never be confused, even at thumbnail size.
  */
-export function createEntity(kind: FallingKind): FallingEntity {
-  const built = builders[kind]();
-  const category = categoryOf(kind);
-  const entity: FallingEntity = {
-    kind,
-    category,
-    group: built.group,
-    radius: built.radius,
-    speed: 4,
-    drift: 0,
-    spinSpeed: 1,
-    x: 0,
-    y: 0,
-    z: 0,
-    alive: true,
-    magnetized: false,
-    age: 0,
-    animate: built.animate,
-    dispose: () => {
-      const list = disposables.get(built.group) ?? [];
-      list.forEach((d) => d.dispose());
-      built.group.clear();
-    },
-  };
-  return entity;
+
+export interface ObjectVisual {
+  group: THREE.Group;
+  update: (dt: number, elapsed: number) => void;
+  /** Hazard-only: drives the warning pulse. */
+  danger?: boolean;
 }
 
-export { buildPower };
+/* ------------------------------------------------------------------ */
+/* shared helpers                                                      */
+/* ------------------------------------------------------------------ */
+
+function glowSprite(color: string, size: number, opacity = 0.7): THREE.Sprite {
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: glowTexture(),
+      color: new THREE.Color(color),
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+  );
+  sprite.scale.set(size, size, 1);
+  return sprite;
+}
+
+function labelTexture(text: string, bg: string, fg: string): THREE.Texture {
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, 128, 128);
+  ctx.fillStyle = fg;
+  ctx.font = 'bold 82px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 64, 68);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const cache = {
+  gold: new THREE.MeshPhysicalMaterial({
+    color: '#ffc93c',
+    metalness: 1,
+    roughness: 0.22,
+    envMapIntensity: 1.8,
+    clearcoat: 0.4,
+  }),
+  goldDark: new THREE.MeshStandardMaterial({ color: '#c98a12', metalness: 1, roughness: 0.35 }),
+  iron: new THREE.MeshStandardMaterial({ color: '#1b1b20', metalness: 0.85, roughness: 0.38 }),
+  ironDark: new THREE.MeshStandardMaterial({ color: '#0d0d10', metalness: 0.7, roughness: 0.5 }),
+  wood: new THREE.MeshStandardMaterial({
+    map: noiseTexture('#b06a2c', '#5d3210', 0.5),
+    roughness: 0.72,
+    metalness: 0.08,
+  }),
+  redGlow: new THREE.MeshStandardMaterial({
+    color: '#ff2d1a',
+    emissive: new THREE.Color('#ff1a00'),
+    emissiveIntensity: 3,
+    roughness: 0.4,
+  }),
+  hazard: new THREE.MeshStandardMaterial({
+    map: hazardTexture('#ffc400', '#141008'),
+    roughness: 0.55,
+    metalness: 0.35,
+  }),
+};
+
+/* ------------------------------------------------------------------ */
+/* rewards                                                             */
+/* ------------------------------------------------------------------ */
+
+function buildCoin(): ObjectVisual {
+  const group = new THREE.Group();
+  const logo = logoTexture();
+
+  const faceMat = new THREE.MeshPhysicalMaterial({
+    map: logo,
+    color: '#ffffff',
+    metalness: 0.95,
+    roughness: 0.26,
+    emissive: new THREE.Color('#ffb300'),
+    emissiveIntensity: 0.35,
+    emissiveMap: logo,
+    envMapIntensity: 1.9,
+    clearcoat: 0.6,
+  });
+
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.1, 48), [
+    cache.gold,
+    faceMat,
+    faceMat,
+  ]);
+  disc.rotation.x = Math.PI / 2;
+  disc.castShadow = true;
+  group.add(disc);
+
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.038, 10, 48), cache.gold);
+  rim.castShadow = true;
+  group.add(rim);
+
+  const inner = new THREE.Mesh(new THREE.TorusGeometry(0.31, 0.012, 8, 40), cache.goldDark);
+  inner.position.z = 0.052;
+  group.add(inner);
+  const inner2 = inner.clone();
+  inner2.position.z = -0.052;
+  group.add(inner2);
+
+  const halo = glowSprite('#ffcf4d', 1.9, 0.55);
+  halo.position.z = -0.1;
+  group.add(halo);
+
+  return {
+    group,
+    update: (dt, elapsed) => {
+      group.rotation.y += dt * 2.2;
+      group.position.z = Math.sin(elapsed * 1.6) * 0.05;
+    },
+  };
+}
+
+function buildCrate(): ObjectVisual {
+  const group = new THREE.Group();
+  const boxGeo = new THREE.BoxGeometry(0.66, 0.66, 0.66);
+  const box = new THREE.Mesh(boxGeo, cache.wood);
+  box.castShadow = true;
+  group.add(box);
+
+  const frameMat = new THREE.MeshPhysicalMaterial({
+    color: '#ffc23c',
+    metalness: 1,
+    roughness: 0.25,
+    emissive: new THREE.Color('#ff9d00'),
+    emissiveIntensity: 0.5,
+  });
+  const barGeo = new THREE.BoxGeometry(0.7, 0.09, 0.7);
+  [0.26, -0.26].forEach((y) => {
+    const bar = new THREE.Mesh(barGeo, frameMat);
+    bar.position.y = y;
+    bar.castShadow = true;
+    group.add(bar);
+  });
+  [-0.26, 0.26].forEach((z) => {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.08), frameMat);
+    bar.position.z = z;
+    bar.scale.y = 0.12;
+    group.add(bar);
+  });
+
+  // DIGO crest on the front face
+  const crest = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.4, 0.4),
+    new THREE.MeshBasicMaterial({ map: logoTexture(), transparent: true }),
+  );
+  crest.position.set(0, 0, 0.335);
+  group.add(crest);
+
+  const lock = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.2, 0.06), frameMat);
+  lock.position.set(0, -0.05, 0.35);
+  group.add(lock);
+
+  const halo = glowSprite('#ffb340', 2.1, 0.6);
+  halo.position.z = -0.2;
+  group.add(halo);
+
+  return {
+    group,
+    update: (dt, elapsed) => {
+      group.rotation.y += dt * 1.5;
+      group.rotation.x = Math.sin(elapsed * 1.2) * 0.08;
+      group.position.z = Math.sin(elapsed * 1.4) * 0.04;
+    },
+  };
+}
+
+function buildGem(): ObjectVisual {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: '#7fe3ff',
+    metalness: 0.1,
+    roughness: 0.05,
+    transmission: 0.62,
+    thickness: 0.9,
+    ior: 1.85,
+    emissive: new THREE.Color('#1a9bff'),
+    emissiveIntensity: 0.5,
+    clearcoat: 1,
+    envMapIntensity: 2.2,
+  });
+  const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0), mat);
+  gem.scale.set(1, 1.28, 1);
+  gem.castShadow = true;
+  group.add(gem);
+
+  const facets = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.435, 0),
+    new THREE.MeshBasicMaterial({
+      color: '#d6f6ff',
+      wireframe: true,
+      transparent: true,
+      opacity: 0.45,
+    }),
+  );
+  facets.scale.set(1, 1.28, 1);
+  group.add(facets);
+
+  const halo = glowSprite('#5fd8ff', 2.0, 0.62);
+  group.add(halo);
+
+  return {
+    group,
+    update: (dt, elapsed) => {
+      gem.rotation.y += dt * 1.7;
+      facets.rotation.y = gem.rotation.y;
+      gem.position.y = Math.sin(elapsed * 2) * 0.05;
+      facets.position.y = gem.position.y;
+    },
+  };
+}
+
+function buildRelic(): ObjectVisual {
+  const group = new THREE.Group();
+  const coreMat = new THREE.MeshPhysicalMaterial({
+    color: '#ffd166',
+    metalness: 1,
+    roughness: 0.16,
+    emissive: new THREE.Color('#b26bff'),
+    emissiveIntensity: 0.8,
+    envMapIntensity: 2.2,
+  });
+  const core = new THREE.Mesh(new THREE.IcosahedronGeometry(0.32, 0), coreMat);
+  core.castShadow = true;
+  group.add(core);
+
+  const ringMat = new THREE.MeshPhysicalMaterial({
+    color: '#c084fc',
+    metalness: 0.9,
+    roughness: 0.2,
+    emissive: new THREE.Color('#7c3aed'),
+    emissiveIntensity: 1.6,
+  });
+  const ring1 = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.028, 10, 48), ringMat);
+  ring1.rotation.x = Math.PI / 2.6;
+  group.add(ring1);
+  const ring2 = new THREE.Mesh(new THREE.TorusGeometry(0.54, 0.022, 10, 48), ringMat);
+  ring2.rotation.y = Math.PI / 2.2;
+  group.add(ring2);
+
+  const halo = glowSprite('#c084fc', 2.6, 0.7);
+  group.add(halo);
+
+  return {
+    group,
+    update: (dt, elapsed) => {
+      core.rotation.y += dt * 1.9;
+      core.rotation.x += dt * 0.8;
+      ring1.rotation.z += dt * 1.5;
+      ring2.rotation.x += dt * 1.1;
+      const pulse = 1 + Math.sin(elapsed * 3.4) * 0.06;
+      core.scale.setScalar(pulse);
+      halo.scale.setScalar(2.6 * (0.94 + Math.sin(elapsed * 3.4) * 0.06));
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* hazards                                                             */
+/* ------------------------------------------------------------------ */
+
+function warningRing(color: string): { sprite: THREE.Sprite; update: (elapsed: number) => void } {
+  const sprite = glowSprite(color, 2.3, 0.5);
+  return {
+    sprite,
+    update: (elapsed) => {
+      const pulse = 0.45 + Math.abs(Math.sin(elapsed * 6)) * 0.5;
+      (sprite.material as THREE.SpriteMaterial).opacity = pulse;
+      sprite.scale.setScalar(2.2 + Math.sin(elapsed * 6) * 0.22);
+    },
+  };
+}
+
+function buildBomb(): ObjectVisual {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.44, 32, 24), cache.iron);
+  body.castShadow = true;
+  group.add(body);
+
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.045, 10, 40), cache.redGlow);
+  band.rotation.x = Math.PI / 2;
+  group.add(band);
+
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.16, 0.16, 16), cache.goldDark);
+  neck.position.y = 0.44;
+  group.add(neck);
+
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0.5, 0),
+    new THREE.Vector3(0.1, 0.66, 0.04),
+    new THREE.Vector3(0.2, 0.74, -0.02),
+  ]);
+  const fuse = new THREE.Mesh(
+    new THREE.TubeGeometry(curve, 14, 0.028, 8, false),
+    new THREE.MeshStandardMaterial({ color: '#c9a06a', roughness: 0.9 }),
+  );
+  group.add(fuse);
+
+  const spark = new THREE.Mesh(
+    new THREE.SphereGeometry(0.075, 12, 10),
+    new THREE.MeshBasicMaterial({ color: '#fff3b0' }),
+  );
+  spark.position.set(0.2, 0.76, -0.02);
+  group.add(spark);
+  const sparkGlow = glowSprite('#ff8a00', 0.95, 0.95);
+  sparkGlow.position.copy(spark.position);
+  group.add(sparkGlow);
+
+  const warn = warningRing('#ff2d1a');
+  warn.sprite.position.z = -0.35;
+  group.add(warn.sprite);
+
+  const skull = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.42, 0.42),
+    new THREE.MeshBasicMaterial({
+      map: labelTexture('!', '#00000000', '#ff3b30'),
+      transparent: true,
+      depthWrite: false,
+    }),
+  );
+  skull.position.set(0, 0.05, 0.46);
+  group.add(skull);
+
+  return {
+    group,
+    danger: true,
+    update: (dt, elapsed) => {
+      group.rotation.y += dt * 0.6;
+      group.rotation.z = Math.sin(elapsed * 1.6) * 0.12;
+      warn.update(elapsed);
+      const flick = 0.7 + Math.random() * 0.5;
+      (sparkGlow.material as THREE.SpriteMaterial).opacity = flick;
+      spark.scale.setScalar(0.85 + Math.random() * 0.4);
+      (cache.redGlow.emissiveIntensity as number) = 2.4;
+    },
+  };
+}
+
+function buildMine(): ObjectVisual {
+  const group = new THREE.Group();
+  const shell = new THREE.Mesh(new THREE.SphereGeometry(0.42, 28, 20), cache.iron);
+  shell.scale.set(1, 0.72, 1);
+  shell.castShadow = true;
+  group.add(shell);
+
+  const spikeGeo = new THREE.ConeGeometry(0.075, 0.26, 8);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const spike = new THREE.Mesh(spikeGeo, cache.ironDark);
+    spike.position.set(Math.cos(a) * 0.4, 0, Math.sin(a) * 0.4);
+    spike.rotation.z = Math.PI / 2;
+    spike.rotation.y = -a;
+    group.add(spike);
+  }
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    const spike = new THREE.Mesh(spikeGeo, cache.ironDark);
+    spike.position.set(Math.cos(a) * 0.22, 0.26, Math.sin(a) * 0.22);
+    spike.rotation.x = 0.5;
+    spike.rotation.y = -a;
+    group.add(spike);
+  }
+
+  const lens = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 12), cache.redGlow);
+  lens.position.y = 0.3;
+  group.add(lens);
+  const lensGlow = glowSprite('#ff2d1a', 1.2, 0.85);
+  lensGlow.position.y = 0.3;
+  group.add(lensGlow);
+
+  const warn = warningRing('#ff5a2d');
+  warn.sprite.position.z = -0.3;
+  group.add(warn.sprite);
+
+  return {
+    group,
+    danger: true,
+    update: (dt, elapsed) => {
+      group.rotation.y += dt * 0.4;
+      warn.update(elapsed);
+      const blink = Math.sin(elapsed * 7) > 0 ? 1 : 0.15;
+      (lensGlow.material as THREE.SpriteMaterial).opacity = blink;
+      lens.visible = blink > 0.5;
+    },
+  };
+}
+
+function buildBarrel(): ObjectVisual {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.8, 24, 1), cache.hazard);
+  body.castShadow = true;
+  group.add(body);
+
+  [-0.3, 0, 0.3].forEach((y) => {
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.345, 0.03, 8, 28), cache.ironDark);
+    band.rotation.x = Math.PI / 2;
+    band.position.y = y;
+    group.add(band);
+  });
+
+  const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.06, 24), cache.ironDark);
+  lid.position.y = 0.41;
+  group.add(lid);
+
+  const hazardLight = new THREE.Mesh(new THREE.SphereGeometry(0.09, 14, 10), cache.redGlow);
+  hazardLight.position.set(0.12, 0.46, 0);
+  group.add(hazardLight);
+  const hGlow = glowSprite('#ff6a00', 1.4, 0.8);
+  hGlow.position.copy(hazardLight.position);
+  group.add(hGlow);
+
+  const warn = warningRing('#ff8f1f');
+  warn.sprite.position.z = -0.3;
+  group.add(warn.sprite);
+
+  return {
+    group,
+    danger: true,
+    update: (dt, elapsed) => {
+      group.rotation.y += dt * 0.8;
+      group.rotation.z = Math.sin(elapsed * 2) * 0.07;
+      warn.update(elapsed);
+      (hGlow.material as THREE.SpriteMaterial).opacity = 0.55 + Math.sin(elapsed * 5) * 0.35;
+    },
+  };
+}
+
+function buildMeteor(): ObjectVisual {
+  const group = new THREE.Group();
+  const geo = new THREE.IcosahedronGeometry(0.44, 1);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const f = 0.82 + Math.random() * 0.35;
+    pos.setXYZ(i, pos.getX(i) * f, pos.getY(i) * f, pos.getZ(i) * f);
+  }
+  geo.computeVertexNormals();
+
+  const rock = new THREE.Mesh(
+    geo,
+    new THREE.MeshStandardMaterial({
+      map: noiseTexture('#5a3a2e', '#1b0f0b', 0.6),
+      emissive: new THREE.Color('#ff5a00'),
+      emissiveIntensity: 0.55,
+      roughness: 0.9,
+      metalness: 0.1,
+    }),
+  );
+  rock.castShadow = true;
+  group.add(rock);
+
+  const flame = new THREE.Mesh(
+    new THREE.ConeGeometry(0.42, 1.5, 14, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: '#ff7a18',
+      transparent: true,
+      opacity: 0.6,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  flame.position.y = 1.0;
+  flame.rotation.x = Math.PI;
+  group.add(flame);
+
+  const glow = glowSprite('#ff5722', 2.4, 0.75);
+  group.add(glow);
+
+  const warn = warningRing('#ff5722');
+  warn.sprite.position.z = -0.35;
+  group.add(warn.sprite);
+
+  return {
+    group,
+    danger: true,
+    update: (dt, elapsed) => {
+      group.rotation.y += dt * 1.3;
+      group.rotation.x += dt * 0.6;
+      const flick = 0.55 + Math.random() * 0.4;
+      (flame.material as THREE.MeshBasicMaterial).opacity = flick;
+      flame.scale.set(0.85 + Math.random() * 0.3, 0.85 + Math.random() * 0.4, 1);
+      warn.update(elapsed);
+      glow.scale.setScalar(2.3 + Math.sin(elapsed * 8) * 0.2);
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* power-ups                                                           */
+/* ------------------------------------------------------------------ */
+
+function powerShell(color: string, iconColor: string): { group: THREE.Group; inner: THREE.Group } {
+  const group = new THREE.Group();
+  const shellMat = new THREE.MeshPhysicalMaterial({
+    color,
+    metalness: 0.35,
+    roughness: 0.15,
+    transmission: 0.45,
+    thickness: 0.6,
+    clearcoat: 1,
+    emissive: new THREE.Color(iconColor),
+    emissiveIntensity: 0.35,
+  });
+  const shell = new THREE.Mesh(new THREE.SphereGeometry(0.42, 24, 18), shellMat);
+  shell.scale.set(1, 1, 0.55);
+  group.add(shell);
+  const inner = new THREE.Group();
+  group.add(inner);
+  const halo = glowSprite(iconColor, 1.9, 0.55);
+  group.add(halo);
+  return { group, inner };
+}
+
+function buildPower(kind: PowerKind): ObjectVisual {
+  const meta = POWER_META[kind];
+  const { group, inner } = powerShell(meta.color, meta.color);
+  const iconMat = new THREE.MeshStandardMaterial({
+    color: '#ffffff',
+    emissive: new THREE.Color(meta.color),
+    emissiveIntensity: 2.2,
+    metalness: 0.4,
+    roughness: 0.25,
+  });
+
+  if (kind === 'shield') {
+    const shield = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 0.07, 6), iconMat);
+    shield.rotation.x = Math.PI / 2;
+    inner.add(shield);
+    const cross = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.3, 0.04), iconMat);
+    cross.position.z = 0.05;
+    inner.add(cross);
+    const cross2 = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.09, 0.04), iconMat);
+    cross2.position.z = 0.05;
+    inner.add(cross2);
+  } else if (kind === 'magnet') {
+    const horseshoe = new THREE.Mesh(
+      new THREE.TorusGeometry(0.2, 0.075, 12, 32, Math.PI * 1.25),
+      iconMat,
+    );
+    horseshoe.rotation.z = -Math.PI * 0.62;
+    inner.add(horseshoe);
+    [-1, 1].forEach((s) => {
+      const pole = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, 0.1), iconMat);
+      pole.position.set(s * 0.19, -0.1, 0);
+      inner.add(pole);
+    });
+  } else if (kind === 'slow') {
+    const top = new THREE.Mesh(new THREE.ConeGeometry(0.19, 0.22, 4), iconMat);
+    top.position.y = 0.12;
+    inner.add(top);
+    const bottom = new THREE.Mesh(new THREE.ConeGeometry(0.19, 0.22, 4), iconMat);
+    bottom.position.y = -0.12;
+    bottom.rotation.x = Math.PI;
+    inner.add(bottom);
+  } else if (kind === 'double') {
+    const plate = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.44, 0.44),
+      new THREE.MeshBasicMaterial({
+        map: labelTexture('2x', '#00000000', '#ffe9a8'),
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    plate.position.z = 0.24;
+    inner.add(plate);
+    const plate2 = plate.clone();
+    plate2.rotation.y = Math.PI;
+    plate2.position.z = -0.24;
+    inner.add(plate2);
+  } else {
+    const star = new THREE.Mesh(new THREE.OctahedronGeometry(0.26, 0), iconMat);
+    star.scale.set(1, 1.3, 0.5);
+    inner.add(star);
+    const star2 = star.clone();
+    star2.rotation.y = Math.PI / 2;
+    inner.add(star2);
+  }
+
+  return {
+    group,
+    update: (dt, elapsed) => {
+      group.rotation.y += dt * 1.9;
+      inner.rotation.z = Math.sin(elapsed * 2.4) * 0.18;
+      group.position.y += Math.sin(elapsed * 2.8) * 0.0016;
+      const pulse = 1 + Math.sin(elapsed * 4) * 0.05;
+      inner.scale.setScalar(pulse);
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* factory                                                             */
+/* ------------------------------------------------------------------ */
+
+export function createObjectVisual(kind: FallingKind): ObjectVisual {
+  switch (kind) {
+    case 'coin':
+      return buildCoin();
+    case 'crate':
+      return buildCrate();
+    case 'gem':
+      return buildGem();
+    case 'relic':
+      return buildRelic();
+    case 'bomb':
+      return buildBomb();
+    case 'mine':
+      return buildMine();
+    case 'barrel':
+      return buildBarrel();
+    case 'meteor':
+      return buildMeteor();
+    default:
+      return buildPower(kind as PowerKind);
+  }
+}
+
+export const OBJECT_RADIUS: Record<FallingKind, number> = {
+  coin: 0.44,
+  crate: 0.46,
+  gem: 0.46,
+  relic: 0.5,
+  bomb: 0.46,
+  mine: 0.48,
+  barrel: 0.44,
+  meteor: 0.48,
+  shield: 0.44,
+  magnet: 0.44,
+  slow: 0.44,
+  double: 0.44,
+  invincible: 0.44,
+};
+
+export function objectLabel(kind: FallingKind): string {
+  if (kind in REWARD_META) return REWARD_META[kind as RewardKind].label;
+  if (kind in DANGER_META) return DANGER_META[kind as DangerKind].label;
+  return POWER_META[kind as PowerKind].label;
+}
+
+export function objectColor(kind: FallingKind): string {
+  if (kind in REWARD_META) return REWARD_META[kind as RewardKind].color;
+  if (kind in DANGER_META) return DANGER_META[kind as DangerKind].color;
+  return POWER_META[kind as PowerKind].color;
+}
