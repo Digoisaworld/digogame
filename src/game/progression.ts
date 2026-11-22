@@ -322,6 +322,16 @@ export function loadProfile(): Profile {
   }
 }
 
+/** Wipes browser-side progress and returns a fresh profile. */
+export function resetProfile(): Profile {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* storage unavailable - nothing to clear */
+  }
+  return loadProfile();
+}
+
 export function saveProfile(profile: Profile): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(profile));
