@@ -1,0 +1,17 @@
+{
+  "name": "digo-evolution",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "DIGO EVOLUTION - 3D mobile arcade survival game (React + TypeScript + Three.js)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "start": "node server/index.js"
+  }
+}
