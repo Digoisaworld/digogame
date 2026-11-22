@@ -13,6 +13,7 @@ services:
       NODE_ENV: production
       PORT: "3000"
       DATA_DIR: /data
+      RUN_SECRET: ${RUN_SECRET:?Set RUN_SECRET in the VPS .env file}
     ports:
       - "127.0.0.1:${HOST_PORT:-3100}:3000"
     volumes:
