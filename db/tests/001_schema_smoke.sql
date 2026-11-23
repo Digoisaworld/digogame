@@ -312,7 +312,7 @@ BEGIN
   END IF;
 
   SELECT finalize_game_run(
-    finalize_run, test_player, 250, 5, 2, 45000, 2, true,
+    finalize_run, test_player, 250, 5, 2, 45000, 2::smallint, true,
     true, NULL, '{"source":"replay"}'::jsonb
   ) INTO finalized_result;
   IF finalized_result IS NOT NULL THEN
