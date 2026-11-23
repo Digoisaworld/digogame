@@ -71,3 +71,8 @@ Migration 001 also provides:
 - `public_level_leaderboard`: exposes accepted results for enabled players, ranked per level by score descending and then submission time ascending.
 
 These are database primitives, not yet wired into Express routes. The CI schema test exercises create/update/stale progress writes, owner-only session revocation, repeated revocation, and leaderboard-view existence.
+
+
+- `finalize_game_run(...)`: atomically marks an unexpired run as submitted and inserts its result only when the run belongs to the supplied enabled player. A missing, expired, disabled-owner, wrong-owner, or previously submitted run returns NULL. Result constraints are still enforced by PostgreSQL; invalid result data raises an error and the caller's transaction must roll back.
+
+The schema smoke test covers successful finalization, replay rejection, expiry rejection, and wrong-player rejection. The Express API does not yet call this function; it is a database-side primitive awaiting the PostgreSQL repository/runtime integration.
