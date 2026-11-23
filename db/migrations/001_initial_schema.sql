@@ -55,14 +55,15 @@ CREATE TABLE IF NOT EXISTS game_runs (
   started_at TIMESTAMPTZ NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL,
   submitted_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT game_runs_id_player_unique UNIQUE (id, player_id)
 );
 CREATE INDEX IF NOT EXISTS game_runs_player_started_idx ON game_runs (player_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS game_runs_expiry_idx ON game_runs (expires_at);
 
 CREATE TABLE IF NOT EXISTS run_results (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  run_id UUID NOT NULL UNIQUE REFERENCES game_runs(id) ON DELETE RESTRICT,
+  run_id UUID NOT NULL UNIQUE,
   player_id UUID NOT NULL REFERENCES players(id) ON DELETE RESTRICT,
   score BIGINT NOT NULL CHECK (score >= 0),
   bonus BIGINT NOT NULL DEFAULT 0 CHECK (bonus >= 0),
@@ -74,6 +75,8 @@ CREATE TABLE IF NOT EXISTS run_results (
   rejection_code TEXT,
   submitted_payload JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT run_results_run_owner_fk FOREIGN KEY (run_id, player_id)
+    REFERENCES game_runs(id, player_id) ON DELETE RESTRICT,
   CONSTRAINT run_results_acceptance_reason CHECK (
     (accepted = true AND rejection_code IS NULL) OR
     (accepted = false AND rejection_code IS NOT NULL)
