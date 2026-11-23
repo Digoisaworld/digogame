@@ -116,6 +116,30 @@ function saveStoreSoon() {
 
 loadStore();
 
+/* Periodic bounded cleanup for process-local security state. This is not a
+ * substitute for shared PostgreSQL/Redis state in a multi-instance deploy. */
+const MAX_SESSIONS = 50_000;
+const MAX_NONCES = 20_000;
+const MAX_RATE_KEYS = 10_000;
+
+function cleanupEphemeralState() {
+  const now = Date.now();
+  for (const [sid, session] of sessions) {
+    if (!session || now >= session.expiresAt) sessions.delete(sid);
+  }
+  for (const [rid, expiresAt] of usedRuns) {
+    if (!Number.isFinite(expiresAt) || now >= expiresAt) usedRuns.delete(rid);
+  }
+  for (const [key, challenge] of Object.entries(store.nonces)) {
+    if (!challenge || now >= challenge.expiresAt) delete store.nonces[key];
+  }
+  for (const [key, bucket] of hits) {
+    if (!bucket || now >= bucket.reset) hits.delete(key);
+  }
+}
+const cleanupTimer = setInterval(cleanupEphemeralState, 60_000);
+cleanupTimer.unref();
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -205,6 +229,8 @@ const hits = new Map();
 function throttle(req, res, next) {
   const key = `${req.ip || 'anon'}:${req.path}`;
   const now = Date.now();
+  if (hits.size >= MAX_RATE_KEYS && !hits.has(key)) cleanupEphemeralState();
+  if (hits.size >= MAX_RATE_KEYS && !hits.has(key)) return res.status(503).json({ error: 'Rate limiter capacity reached. Retry shortly.' });
   const bucket = hits.get(key) ?? { count: 0, reset: now + 60_000 };
   if (now > bucket.reset) {
     bucket.count = 0;
@@ -220,6 +246,8 @@ function throttle(req, res, next) {
 }
 
 function issueSession(address) {
+  cleanupEphemeralState();
+  if (sessions.size >= MAX_SESSIONS) throw new Error('Session capacity reached; retry later.');
   const sid = crypto.randomUUID();
   const expiresAt = Date.now() + SESSION_TTL_MS;
   sessions.set(sid, { address, expiresAt });
@@ -444,6 +472,10 @@ app.post('/api/wallet/nonce', throttle, (req, res) => {
     `Expires: ${new Date(expiresAt).toISOString()}`,
   ].join('\n');
 
+  cleanupEphemeralState();
+  if (!Object.hasOwn(store.nonces, address) && Object.keys(store.nonces).length >= MAX_NONCES) {
+    return res.status(503).json({ error: 'Wallet challenge capacity reached. Retry shortly.' });
+  }
   store.nonces[address] = { message, expiresAt };
   res.json({ address, message, expiresAt });
 });
