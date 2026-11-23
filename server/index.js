@@ -284,6 +284,9 @@ app.post('/api/runs/start', throttle, requireSession, (req, res) => {
 
 app.post('/api/runs', throttle, requireSession, (req, res) => {
   const { token, result, name } = req.body ?? {};
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return res.status(400).json({ accepted: false, reason: 'Malformed run result.' });
+  }
   const ticket = readTicket(token);
   if (!ticket) {
     store.runsRejected += 1;
@@ -432,7 +435,7 @@ app.post('/api/wallet/nonce', throttle, (req, res) => {
 app.post('/api/wallet/verify', throttle, (req, res) => {
   const { address, signature, message } = req.body ?? {};
   if (!validAddress(address)) return res.status(400).json({ error: 'Invalid Solana address.' });
-  if (typeof signature !== 'string' || typeof message !== 'string') {
+  if (typeof signature !== 'string' || typeof message !== 'string' || message.length > 2048 || signature.length > 128) {
     return res.status(400).json({ error: 'Signature and message are required.' });
   }
 
@@ -448,11 +451,14 @@ app.post('/api/wallet/verify', throttle, (req, res) => {
   let verified = false;
   try {
     const sig = Buffer.from(signature, 'base64');
-    verified = nacl.sign.detached.verify(
-      Buffer.from(message, 'utf8'),
-      sig,
-      bs58.decode(address),
-    );
+    // Reject malformed/non-canonical base64 and wrong Ed25519 signature lengths.
+    if (sig.length === nacl.sign.signatureLength && sig.toString('base64') === signature) {
+      verified = nacl.sign.detached.verify(
+        Buffer.from(message, 'utf8'),
+        sig,
+        bs58.decode(address),
+      );
+    }
   } catch {
     verified = false;
   }
