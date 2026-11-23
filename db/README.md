@@ -55,3 +55,8 @@ DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE' npm run db:migrate
 ```
 
 It requires the PostgreSQL `psql` client, stops on the first SQL error, and wraps migration 001 in a transaction. Run it with a dedicated least-privilege DIGO migration role against the intended database. Keep credentials in the deployment secret manager; do not commit connection strings. The runner only creates/ensures the declared schema objects; it does not wire the Express API to PostgreSQL or migrate the current JSON snapshot data.
+
+
+## Atomic wallet challenge consumption
+
+Migration 001 defines `consume_wallet_challenge(wallet_address, message_sha256)`. It atomically marks a matching, unexpired, unused challenge as consumed and returns its message only to the transaction that changed the row. Repeated or concurrent calls cannot consume the same challenge twice. The application must still verify the returned message's Ed25519 signature before creating a player session; consuming a challenge is not proof of wallet ownership by itself. CI smoke tests cover successful single use, replay rejection, and expiry.
