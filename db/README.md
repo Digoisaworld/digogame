@@ -44,3 +44,14 @@ Do not deploy this branch as a durable multiplayer backend while `/api/health` r
 ## Process-local state limits (interim only)
 
 The API now periodically expires stale in-process sessions, used-run markers, wallet challenges, and rate-limit buckets. It also applies explicit capacity ceilings to sessions, challenges, and rate-limit keys, returning a controlled retry response when a ceiling is reached. This protects a single process from unbounded growth; it does not provide cross-process consistency, restart persistence, or a distributed rate limit. These maps remain an interim implementation and must be replaced by transactional PostgreSQL operations (and shared rate limiting where multiple instances are used) before production scale or token rewards.
+
+
+## Applying the initial schema
+
+The repository includes a non-destructive schema runner:
+
+```sh
+DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE' npm run db:migrate
+```
+
+It requires the PostgreSQL `psql` client, stops on the first SQL error, and wraps migration 001 in a transaction. Run it with a dedicated least-privilege DIGO migration role against the intended database. Keep credentials in the deployment secret manager; do not commit connection strings. The runner only creates/ensures the declared schema objects; it does not wire the Express API to PostgreSQL or migrate the current JSON snapshot data.
