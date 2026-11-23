@@ -127,3 +127,70 @@ AS $$
     AND challenge.expires_at > clock_timestamp()
   RETURNING challenge.id, challenge.message, challenge.expires_at;
 $$;
+
+
+-- Optimistic progress upsert. expected_revision=0 creates a new row;
+-- otherwise the existing row must match the caller's last observed revision.
+CREATE OR REPLACE FUNCTION save_player_progress(
+  p_player_id UUID,
+  p_progress JSONB,
+  p_expected_revision BIGINT
+)
+RETURNS TABLE (new_revision BIGINT, changed_at TIMESTAMPTZ)
+LANGUAGE sql
+AS $$
+  INSERT INTO player_progress (player_id, progress, revision, updated_at)
+  VALUES (p_player_id, p_progress, 1, clock_timestamp())
+  ON CONFLICT (player_id) DO UPDATE
+    SET progress = EXCLUDED.progress,
+        revision = player_progress.revision + 1,
+        updated_at = clock_timestamp()
+    WHERE player_progress.revision = p_expected_revision
+  RETURNING player_progress.revision, player_progress.updated_at;
+$$;
+
+-- Revoke only the specified player's session; repeated revocation is harmless.
+CREATE OR REPLACE FUNCTION revoke_player_session(
+  p_session_id UUID,
+  p_player_id UUID
+)
+RETURNS BOOLEAN
+LANGUAGE sql
+AS $$
+  WITH revoked AS (
+    UPDATE player_sessions
+    SET revoked_at = COALESCE(revoked_at, clock_timestamp())
+    WHERE id = p_session_id
+      AND player_id = p_player_id
+      AND revoked_at IS NULL
+    RETURNING 1
+  )
+  SELECT EXISTS (SELECT 1 FROM revoked);
+$$;
+
+-- Public leaderboard data contains only wallet address, level, score and time.
+CREATE OR REPLACE VIEW public_level_leaderboard AS
+SELECT
+  ranked.level_id,
+  ranked.player_id,
+  ranked.wallet_address,
+  ranked.score,
+  ranked.created_at,
+  ranked.rank
+FROM (
+  SELECT
+    runs.level_id,
+    results.player_id,
+    players.wallet_address,
+    results.score,
+    results.created_at,
+    row_number() OVER (
+      PARTITION BY runs.level_id
+      ORDER BY results.score DESC, results.created_at ASC, results.player_id
+    ) AS rank
+  FROM run_results AS results
+  JOIN game_runs AS runs ON runs.id = results.run_id
+  JOIN players ON players.id = results.player_id
+  WHERE results.accepted = true
+    AND players.disabled_at IS NULL
+) AS ranked;
