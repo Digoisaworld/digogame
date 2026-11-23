@@ -6,6 +6,8 @@ DECLARE
   required_table TEXT;
   test_player UUID;
   test_run UUID;
+  test_negative_run UUID;
+  test_reason_run UUID;
   test_session UUID;
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
@@ -96,13 +98,17 @@ BEGIN
     NULL;
   END;
 
+  INSERT INTO game_runs (id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at)
+  VALUES (gen_random_uuid(), test_player, 1, 'island', 12346, repeat('c', 64), now(), now() + interval '30 minutes')
+  RETURNING id INTO test_negative_run;
+
   -- Negative score must be rejected by the database.
   BEGIN
     INSERT INTO run_results (
       run_id, player_id, score, bonus, digo, elapsed_ms,
       stars, victory, accepted, rejection_code, submitted_payload
     ) VALUES (
-      gen_random_uuid(), test_player, -1, 0, 0, 1000,
+      test_negative_run, test_player, -1, 0, 0, 1000,
       0, false, true, NULL, '{}'::jsonb
     );
     RAISE EXCEPTION 'Negative score unexpectedly accepted';
@@ -110,13 +116,17 @@ BEGIN
     NULL;
   END;
 
+  INSERT INTO game_runs (id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at)
+  VALUES (gen_random_uuid(), test_player, 1, 'island', 12347, repeat('d', 64), now(), now() + interval '30 minutes')
+  RETURNING id INTO test_reason_run;
+
   -- Accepted results cannot carry a rejection code.
   BEGIN
     INSERT INTO run_results (
       run_id, player_id, score, bonus, digo, elapsed_ms,
       stars, victory, accepted, rejection_code, submitted_payload
     ) VALUES (
-      gen_random_uuid(), test_player, 0, 0, 0, 1000,
+      test_reason_run, test_player, 0, 0, 0, 1000,
       0, false, true, 'invalid', '{}'::jsonb
     );
     RAISE EXCEPTION 'Inconsistent acceptance state unexpectedly accepted';
