@@ -2,9 +2,9 @@ name: DIGO CI
 
 on:
   push:
-    branches: [appjet, main]
+    branches: [appjet, main, feat/postgres-runtime-integration]
   pull_request:
-    branches: [main]
+    branches: [main, feat/backend-stage1-hardening]
 
 permissions:
   contents: read
@@ -12,6 +12,20 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: digo_ci
+          POSTGRES_USER: digo_ci
+          POSTGRES_PASSWORD: digo_ci_test_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U digo_ci -d digo_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,6 +36,14 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Validate PostgreSQL schema and invariants
+        env:
+          PGPASSWORD: digo_ci_test_only
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+          psql -h localhost -U digo_ci -d digo_ci -v ON_ERROR_STOP=1 -f db/migrations/001_initial_schema.sql
+          psql -h localhost -U digo_ci -d digo_ci -v ON_ERROR_STOP=1 -f db/tests/001_schema_smoke.sql
       - name: Type-check
         run: npm run typecheck
       - name: Campaign and gameplay regression tests

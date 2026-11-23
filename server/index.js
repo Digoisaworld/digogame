@@ -26,7 +26,11 @@ const DIST_DIR = path.join(__dirname, '..', 'dist');
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || '';
-const RUN_SECRET = process.env.RUN_SECRET || crypto.randomBytes(32).toString('hex');
+const configuredRunSecret = process.env.RUN_SECRET || '';
+if (process.env.NODE_ENV === 'production' && Buffer.byteLength(configuredRunSecret, 'utf8') < 32) {
+  throw new Error('RUN_SECRET must be configured with at least 32 bytes in production.');
+}
+const RUN_SECRET = configuredRunSecret || crypto.randomBytes(32).toString('hex');
 const SOLANA_CLUSTER = process.env.SOLANA_CLUSTER || 'mainnet-beta';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -112,6 +116,30 @@ function saveStoreSoon() {
 
 loadStore();
 
+/* Periodic bounded cleanup for process-local security state. This is not a
+ * substitute for shared PostgreSQL/Redis state in a multi-instance deploy. */
+const MAX_SESSIONS = 50_000;
+const MAX_NONCES = 20_000;
+const MAX_RATE_KEYS = 10_000;
+
+function cleanupEphemeralState() {
+  const now = Date.now();
+  for (const [sid, session] of sessions) {
+    if (!session || now >= session.expiresAt) sessions.delete(sid);
+  }
+  for (const [rid, expiresAt] of usedRuns) {
+    if (!Number.isFinite(expiresAt) || now >= expiresAt) usedRuns.delete(rid);
+  }
+  for (const [key, challenge] of Object.entries(store.nonces)) {
+    if (!challenge || now >= challenge.expiresAt) delete store.nonces[key];
+  }
+  for (const [key, bucket] of hits) {
+    if (!bucket || now >= bucket.reset) hits.delete(key);
+  }
+}
+const cleanupTimer = setInterval(cleanupEphemeralState, 60_000);
+cleanupTimer.unref();
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -126,14 +154,21 @@ function signTicket(payload) {
 
 function readTicket(token) {
   if (typeof token !== 'string' || !token.includes('.')) return null;
-  const [body, mac] = token.split('.');
-  if (!body || !mac) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [body, mac] = parts;
+  if (!body || !mac || !/^[A-Za-z0-9_-]+$/.test(body) || !/^[A-Za-z0-9_-]+$/.test(mac)) return null;
   const expected = crypto.createHmac('sha256', RUN_SECRET).update(body).digest('base64url');
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   try {
-    return JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+      || typeof payload.rid !== 'string' || !Number.isSafeInteger(payload.seed)
+      || !Number.isSafeInteger(payload.level) || typeof payload.world !== 'string'
+      || typeof payload.address !== 'string' || !Number.isFinite(payload.iat)) return null;
+    return payload;
   } catch {
     return null;
   }
@@ -194,6 +229,8 @@ const hits = new Map();
 function throttle(req, res, next) {
   const key = `${req.ip || 'anon'}:${req.path}`;
   const now = Date.now();
+  if (hits.size >= MAX_RATE_KEYS && !hits.has(key)) cleanupEphemeralState();
+  if (hits.size >= MAX_RATE_KEYS && !hits.has(key)) return res.status(503).json({ error: 'Rate limiter capacity reached. Retry shortly.' });
   const bucket = hits.get(key) ?? { count: 0, reset: now + 60_000 };
   if (now > bucket.reset) {
     bucket.count = 0;
@@ -209,6 +246,8 @@ function throttle(req, res, next) {
 }
 
 function issueSession(address) {
+  cleanupEphemeralState();
+  if (sessions.size >= MAX_SESSIONS) return null;
   const sid = crypto.randomUUID();
   const expiresAt = Date.now() + SESSION_TTL_MS;
   sessions.set(sid, { address, expiresAt });
@@ -220,13 +259,19 @@ function issueSession(address) {
 function requireSession(req, res, next) {
   const match = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(req.headers.authorization || '');
   if (!match) return res.status(401).json({ error: 'Wallet sign-in required.' });
-  const [body, mac] = match[1].split('.');
+  const parts = match[1].split('.');
+  if (parts.length !== 2) return res.status(401).json({ error: 'Invalid session.' });
+  const [body, mac] = parts;
   if (!body || !mac) return res.status(401).json({ error: 'Invalid session.' });
   const expected = crypto.createHmac('sha256', RUN_SECRET).update('session.' + body).digest('base64url');
   const a = Buffer.from(mac); const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Invalid session.' });
   let payload;
   try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { return res.status(401).json({ error: 'Invalid session.' }); }
+  if (!payload || typeof payload !== 'object' || typeof payload.sid !== 'string'
+    || typeof payload.address !== 'string' || !Number.isFinite(payload.exp)) {
+    return res.status(401).json({ error: 'Invalid session.' });
+  }
   const session = sessions.get(payload.sid);
   if (!session || session.address !== payload.address || session.expiresAt !== payload.exp || Date.now() >= payload.exp) {
     sessions.delete(payload.sid);
@@ -247,7 +292,8 @@ app.get('/api/health', (_req, res) => {
     service: 'digo-evolution',
     uptime: Math.round(process.uptime()),
     cluster: SOLANA_CLUSTER,
-    storage: STORE_FILE ? 'file' : 'memory',
+    storage: STORE_FILE ? 'json-snapshot (non-durable runtime state)' : 'memory (non-durable)',
+    productionSecretConfigured: process.env.NODE_ENV !== 'production' || configuredRunSecret.length >= 32,
     runs: { started: store.runsStarted, accepted: store.runsAccepted, rejected: store.runsRejected },
   });
 });
@@ -279,6 +325,9 @@ app.post('/api/runs/start', throttle, requireSession, (req, res) => {
 
 app.post('/api/runs', throttle, requireSession, (req, res) => {
   const { token, result, name } = req.body ?? {};
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return res.status(400).json({ accepted: false, reason: 'Malformed run result.' });
+  }
   const ticket = readTicket(token);
   if (!ticket) {
     store.runsRejected += 1;
@@ -286,6 +335,9 @@ app.post('/api/runs', throttle, requireSession, (req, res) => {
     return res.status(400).json({ accepted: false, reason: 'Invalid or expired run ticket.' });
   }
 
+  if (result.collected !== undefined && (!result.collected || typeof result.collected !== 'object' || Array.isArray(result.collected))) {
+    return res.status(400).json({ accepted: false, reason: 'Malformed collection data.' });
+  }
   const elapsed = num(result?.elapsed);
   const score = num(result?.score);
   if (elapsed === null || score === null || elapsed < 0 || score < 0) {
@@ -420,6 +472,10 @@ app.post('/api/wallet/nonce', throttle, (req, res) => {
     `Expires: ${new Date(expiresAt).toISOString()}`,
   ].join('\n');
 
+  cleanupEphemeralState();
+  if (!Object.hasOwn(store.nonces, address) && Object.keys(store.nonces).length >= MAX_NONCES) {
+    return res.status(503).json({ error: 'Wallet challenge capacity reached. Retry shortly.' });
+  }
   store.nonces[address] = { message, expiresAt };
   res.json({ address, message, expiresAt });
 });
@@ -427,7 +483,7 @@ app.post('/api/wallet/nonce', throttle, (req, res) => {
 app.post('/api/wallet/verify', throttle, (req, res) => {
   const { address, signature, message } = req.body ?? {};
   if (!validAddress(address)) return res.status(400).json({ error: 'Invalid Solana address.' });
-  if (typeof signature !== 'string' || typeof message !== 'string') {
+  if (typeof signature !== 'string' || typeof message !== 'string' || message.length > 2048 || signature.length > 128) {
     return res.status(400).json({ error: 'Signature and message are required.' });
   }
 
@@ -443,11 +499,14 @@ app.post('/api/wallet/verify', throttle, (req, res) => {
   let verified = false;
   try {
     const sig = Buffer.from(signature, 'base64');
-    verified = nacl.sign.detached.verify(
-      Buffer.from(message, 'utf8'),
-      sig,
-      bs58.decode(address),
-    );
+    // Reject malformed/non-canonical base64 and wrong Ed25519 signature lengths.
+    if (sig.length === nacl.sign.signatureLength && sig.toString('base64') === signature) {
+      verified = nacl.sign.detached.verify(
+        Buffer.from(message, 'utf8'),
+        sig,
+        bs58.decode(address),
+      );
+    }
   } catch {
     verified = false;
   }
@@ -459,6 +518,7 @@ app.post('/api/wallet/verify', throttle, (req, res) => {
   store.wallets[address] = { linkedAt, lastSeen: linkedAt };
   saveStoreSoon();
   const session = issueSession(address);
+  if (!session) return res.status(503).json({ error: 'Session capacity reached. Retry shortly.' });
   res.json({ verified: true, address, linkedAt, token: session.token, expiresAt: session.expiresAt });
 });
 
