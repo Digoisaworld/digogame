@@ -2,9 +2,9 @@ name: DIGO CI
 
 on:
   push:
-    branches: [appjet, main]
+    branches: [appjet, main, feat/postgres-runtime-integration]
   pull_request:
-    branches: [main]
+    branches: [main, feat/backend-stage1-hardening]
 
 permissions:
   contents: read
