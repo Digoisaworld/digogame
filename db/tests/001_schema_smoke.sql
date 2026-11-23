@@ -14,6 +14,8 @@ DECLARE
   progress_revision BIGINT;
   challenge_id UUID;
   challenge_count INTEGER;
+  saved_revision BIGINT;
+  revoked BOOLEAN;
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
     'players', 'wallet_challenges', 'player_sessions',
@@ -216,6 +218,45 @@ BEGIN
   EXCEPTION WHEN check_violation THEN
     NULL;
   END;
-END $$;
+
+  -- The progress function creates at revision zero and rejects stale writers.
+  SELECT new_revision INTO saved_revision
+  FROM save_player_progress(test_player, '{"stage":1}'::jsonb, 0);
+  IF saved_revision IS DISTINCT FROM 1 THEN
+    RAISE EXCEPTION 'Initial progress save did not create revision 1';
+  END IF;
+
+  SELECT new_revision INTO saved_revision
+  FROM save_player_progress(test_player, '{"stage":2}'::jsonb, 1);
+  IF saved_revision IS DISTINCT FROM 2 THEN
+    RAISE EXCEPTION 'Progress save did not advance to revision 2';
+  END IF;
+
+  SELECT new_revision INTO saved_revision
+  FROM save_player_progress(test_player, '{"stage":99}'::jsonb, 1);
+  IF saved_revision IS NOT NULL THEN
+    RAISE EXCEPTION 'Stale progress writer unexpectedly succeeded';
+  END IF;
+
+  -- A session can be revoked only by its owning player.
+  SELECT revoke_player_session(test_session, second_player) INTO revoked;
+  IF revoked THEN
+    RAISE EXCEPTION 'A different player revoked this session';
+  END IF;
+
+  SELECT revoke_player_session(test_session, test_player) INTO revoked;
+  IF NOT revoked THEN
+    RAISE EXCEPTION 'Session owner could not revoke the session';
+  END IF;
+
+  SELECT revoke_player_session(test_session, test_player) INTO revoked;
+  IF revoked THEN
+    RAISE EXCEPTION 'Repeated session revocation should be a no-op';
+  END IF;
+
+  IF to_regclass('public.public_level_leaderboard') IS NULL THEN
+    RAISE EXCEPTION 'Public level leaderboard view is missing';
+  END IF;
+END $;
 
 ROLLBACK;
