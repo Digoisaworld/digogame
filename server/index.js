@@ -130,14 +130,21 @@ function signTicket(payload) {
 
 function readTicket(token) {
   if (typeof token !== 'string' || !token.includes('.')) return null;
-  const [body, mac] = token.split('.');
-  if (!body || !mac) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [body, mac] = parts;
+  if (!body || !mac || !/^[A-Za-z0-9_-]+$/.test(body) || !/^[A-Za-z0-9_-]+$/.test(mac)) return null;
   const expected = crypto.createHmac('sha256', RUN_SECRET).update(body).digest('base64url');
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
   try {
-    return JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+      || typeof payload.rid !== 'string' || !Number.isSafeInteger(payload.seed)
+      || !Number.isSafeInteger(payload.level) || typeof payload.world !== 'string'
+      || typeof payload.address !== 'string' || !Number.isFinite(payload.iat)) return null;
+    return payload;
   } catch {
     return null;
   }
@@ -224,13 +231,19 @@ function issueSession(address) {
 function requireSession(req, res, next) {
   const match = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(req.headers.authorization || '');
   if (!match) return res.status(401).json({ error: 'Wallet sign-in required.' });
-  const [body, mac] = match[1].split('.');
+  const parts = match[1].split('.');
+  if (parts.length !== 2) return res.status(401).json({ error: 'Invalid session.' });
+  const [body, mac] = parts;
   if (!body || !mac) return res.status(401).json({ error: 'Invalid session.' });
   const expected = crypto.createHmac('sha256', RUN_SECRET).update('session.' + body).digest('base64url');
   const a = Buffer.from(mac); const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Invalid session.' });
   let payload;
   try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { return res.status(401).json({ error: 'Invalid session.' }); }
+  if (!payload || typeof payload !== 'object' || typeof payload.sid !== 'string'
+    || typeof payload.address !== 'string' || !Number.isFinite(payload.exp)) {
+    return res.status(401).json({ error: 'Invalid session.' });
+  }
   const session = sessions.get(payload.sid);
   if (!session || session.address !== payload.address || session.expiresAt !== payload.exp || Date.now() >= payload.exp) {
     sessions.delete(payload.sid);
@@ -294,6 +307,9 @@ app.post('/api/runs', throttle, requireSession, (req, res) => {
     return res.status(400).json({ accepted: false, reason: 'Invalid or expired run ticket.' });
   }
 
+  if (result.collected !== undefined && (!result.collected || typeof result.collected !== 'object' || Array.isArray(result.collected))) {
+    return res.status(400).json({ accepted: false, reason: 'Malformed collection data.' });
+  }
   const elapsed = num(result?.elapsed);
   const score = num(result?.score);
   if (elapsed === null || score === null || elapsed < 0 || score < 0) {
