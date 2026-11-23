@@ -76,3 +76,13 @@ These are database primitives, not yet wired into Express routes. The CI schema 
 - `finalize_game_run(...)`: atomically marks an unexpired run as submitted and inserts its result only when the run belongs to the supplied enabled player. A missing, expired, disabled-owner, wrong-owner, or previously submitted run returns NULL. Result constraints are still enforced by PostgreSQL; invalid result data raises an error and the caller's transaction must roll back.
 
 The schema smoke test covers successful finalization, replay rejection, expiry rejection, and wrong-player rejection. The Express API does not yet call this function; it is a database-side primitive awaiting the PostgreSQL repository/runtime integration.
+
+
+## Durable session lifecycle primitives
+
+Migration 001 additionally defines:
+
+- `create_player_session(session_id, player_id, token_sha256, expires_at)`: creates a session only for an enabled player and only when its expiry is in the future and no more than seven days away. It stores the token digest, never the bearer token.
+- `validate_player_session(token_sha256)`: atomically updates `last_seen_at` and returns the player UUID, wallet address, and expiry only for an active, unexpired session belonging to an enabled player. Revoked, expired, unknown, and disabled-player sessions return no row.
+
+The schema smoke test exercises successful session creation and validation, disabled-account rejection, and the owner-bound revoke function. These functions are not yet called by the Express API; runtime repository integration and real PostgreSQL-backed API tests remain required.
