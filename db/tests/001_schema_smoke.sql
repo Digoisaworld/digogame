@@ -304,7 +304,7 @@ BEGIN
   RETURNING id INTO finalize_run;
 
   SELECT finalize_game_run(
-    finalize_run, test_player, 250, 5, 2, 45000, 2, true,
+    finalize_run, test_player, 250, 5, 2, 45000, 2::smallint, true,
     true, NULL, '{"source":"smoke-test"}'::jsonb
   ) INTO finalized_result;
   IF finalized_result IS NULL THEN
@@ -324,7 +324,7 @@ BEGIN
   RETURNING id INTO finalize_run;
 
   SELECT finalize_game_run(
-    finalize_run, test_player, 1, 0, 0, 1000, 0, false,
+    finalize_run, test_player, 1, 0, 0, 1000, 0::smallint, false,
     true, NULL, '{}'::jsonb
   ) INTO finalized_result;
   IF finalized_result IS NOT NULL THEN
@@ -336,7 +336,7 @@ BEGIN
   RETURNING id INTO finalize_run;
 
   SELECT finalize_game_run(
-    finalize_run, second_player, 1, 0, 0, 1000, 0, false,
+    finalize_run, second_player, 1, 0, 0, 1000, 0::smallint, false,
     true, NULL, '{}'::jsonb
   ) INTO finalized_result;
   IF finalized_result IS NOT NULL THEN
