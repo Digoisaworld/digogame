@@ -26,7 +26,11 @@ const DIST_DIR = path.join(__dirname, '..', 'dist');
 
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || '';
-const RUN_SECRET = process.env.RUN_SECRET || crypto.randomBytes(32).toString('hex');
+const configuredRunSecret = process.env.RUN_SECRET || '';
+if (process.env.NODE_ENV === 'production' && Buffer.byteLength(configuredRunSecret, 'utf8') < 32) {
+  throw new Error('RUN_SECRET must be configured with at least 32 bytes in production.');
+}
+const RUN_SECRET = configuredRunSecret || crypto.randomBytes(32).toString('hex');
 const SOLANA_CLUSTER = process.env.SOLANA_CLUSTER || 'mainnet-beta';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
@@ -247,7 +251,8 @@ app.get('/api/health', (_req, res) => {
     service: 'digo-evolution',
     uptime: Math.round(process.uptime()),
     cluster: SOLANA_CLUSTER,
-    storage: STORE_FILE ? 'file' : 'memory',
+    storage: STORE_FILE ? 'json-snapshot (non-durable runtime state)' : 'memory (non-durable)',
+    productionSecretConfigured: process.env.NODE_ENV !== 'production' || configuredRunSecret.length >= 32,
     runs: { started: store.runsStarted, accepted: store.runsAccepted, rejected: store.runsRejected },
   });
 });
