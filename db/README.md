@@ -39,3 +39,8 @@ The schema smoke test verifies required tables, unique wallet and session digest
 ## Release gate
 
 Do not deploy this branch as a durable multiplayer backend while `/api/health` reports memory/JSON storage. Runtime PostgreSQL persistence, production-like integration tests, backup/restore verification, and an explicit deployment approval are mandatory gates. The current score plausibility checks are heuristic and client-reported; they are not server-authoritative anti-cheat.
+
+
+## Process-local state limits (interim only)
+
+The API now periodically expires stale in-process sessions, used-run markers, wallet challenges, and rate-limit buckets. It also applies explicit capacity ceilings to sessions, challenges, and rate-limit keys, returning a controlled retry response when a ceiling is reached. This protects a single process from unbounded growth; it does not provide cross-process consistency, restart persistence, or a distributed rate limit. These maps remain an interim implementation and must be replaced by transactional PostgreSQL operations (and shared rate limiting where multiple instances are used) before production scale or token rewards.
