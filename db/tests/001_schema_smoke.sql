@@ -16,6 +16,8 @@ DECLARE
   challenge_count INTEGER;
   saved_revision BIGINT;
   revoked BOOLEAN;
+  finalized_result UUID;
+  finalize_run UUID;
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
     'players', 'wallet_challenges', 'player_sessions',
@@ -256,6 +258,51 @@ BEGIN
 
   IF to_regclass('public.public_level_leaderboard') IS NULL THEN
     RAISE EXCEPTION 'Public level leaderboard view is missing';
+  END IF;
+
+  -- Finalization binds the result to the owner and consumes the run once.
+  INSERT INTO game_runs (id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at)
+  VALUES (gen_random_uuid(), test_player, 2, 'island', 22222, repeat('9', 64), now(), now() + interval '5 minutes')
+  RETURNING id INTO finalize_run;
+
+  SELECT finalize_game_run(
+    finalize_run, test_player, 250, 5, 2, 45000, 2, true,
+    true, NULL, '{"source":"smoke-test"}'::jsonb
+  ) INTO finalized_result;
+  IF finalized_result IS NULL THEN
+    RAISE EXCEPTION 'Valid game run did not finalize';
+  END IF;
+
+  SELECT finalize_game_run(
+    finalize_run, test_player, 250, 5, 2, 45000, 2, true,
+    true, NULL, '{"source":"replay"}'::jsonb
+  ) INTO finalized_result;
+  IF finalized_result IS NOT NULL THEN
+    RAISE EXCEPTION 'A game run was finalized more than once';
+  END IF;
+
+  INSERT INTO game_runs (id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at)
+  VALUES (gen_random_uuid(), test_player, 2, 'island', 22223, repeat('8', 64), now() - interval '1 hour', now() - interval '30 minutes')
+  RETURNING id INTO finalize_run;
+
+  SELECT finalize_game_run(
+    finalize_run, test_player, 1, 0, 0, 1000, 0, false,
+    true, NULL, '{}'::jsonb
+  ) INTO finalized_result;
+  IF finalized_result IS NOT NULL THEN
+    RAISE EXCEPTION 'An expired game run was finalized';
+  END IF;
+
+  INSERT INTO game_runs (id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at)
+  VALUES (gen_random_uuid(), test_player, 2, 'island', 22224, repeat('7', 64), now(), now() + interval '5 minutes')
+  RETURNING id INTO finalize_run;
+
+  SELECT finalize_game_run(
+    finalize_run, second_player, 1, 0, 0, 1000, 0, false,
+    true, NULL, '{}'::jsonb
+  ) INTO finalized_result;
+  IF finalized_result IS NOT NULL THEN
+    RAISE EXCEPTION 'A different player finalized another player run';
   END IF;
 END $;
 
