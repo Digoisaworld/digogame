@@ -4,16 +4,18 @@ The initial schema is in `migrations/001_initial_schema.sql`.
 
 ## Status
 
-This is a schema foundation only. The current Express API still uses its existing JSON snapshot and in-memory session/run maps. Creating this migration does **not** switch the running service to PostgreSQL, and it must not be described as durable account storage until the API repository layer is implemented and tested.
+This is a schema foundation plus PostgreSQL CI smoke tests only. The current Express API still uses its existing JSON snapshot and in-memory session/run maps; `pg` is not yet a runtime dependency and no API route reads or writes PostgreSQL. Creating this migration does **not** switch the running service to PostgreSQL, and it must not be described as durable account storage until the API repository layer is implemented and tested.
 
 ## Intended rollout
 
 1. Provision a dedicated PostgreSQL database and least-privilege DIGO application role. Do not reuse an An Pardaz database or database credentials.
 2. Keep PostgreSQL on a private Docker network; do not publish its port on the VPS.
 3. Back up the empty/new DIGO database and apply migrations using a migration identity separate from the runtime role.
-4. Implement and test transactional repository operations for player upsert, one-time challenge consumption, hashed session creation/revocation, run-ticket persistence, unique run submission, progress revision updates, and leaderboard reads.
-5. Dual-read/write only through an explicitly tested migration plan. Do not silently discard the existing JSON snapshot.
-6. Verify restore from backup and rollback before switching traffic.
+4. Add the PostgreSQL driver with a reproducible lockfile update, then implement a bounded connection pool and readiness/health checks.
+5. Implement and test transactional repository operations for player upsert, one-time challenge consumption (`UPDATE ... WHERE consumed_at IS NULL AND expires_at > now() RETURNING ...`), hashed session creation/revocation, run-ticket persistence, unique run submission, progress revision updates (`UPDATE ... WHERE revision = expected_revision`), and leaderboard reads.
+6. Add integration tests for concurrent challenge consumption, concurrent duplicate submissions, session revocation/expiry, database outage behavior, and restart persistence.
+7. Dual-read/write only through an explicitly tested migration plan. Do not silently discard the existing JSON snapshot.
+8. Verify restore from backup and rollback before switching traffic.
 
 ## Security invariants
 
@@ -29,3 +31,11 @@ This is a schema foundation only. The current Express API still uses its existin
 The hardened API signs run tickets and session tokens with `RUN_SECRET`. In production this value must be supplied explicitly and contain at least 32 bytes; the process now refuses to start when it is absent or too short. Generate it once with a cryptographically secure generator, store it in the DIGO-only secret store, and keep it stable across restarts and replicas. Rotating it invalidates existing sessions and run tickets. Never commit the value, put it in a client bundle, or reuse an An Pardaz secret.
 
 The current runtime still uses process-local session/run maps and the optional JSON snapshot for leaderboard counters. This is not multi-instance safe and is not durable account/gameplay persistence. PostgreSQL integration and server-authoritative gameplay simulation are still outstanding.
+
+## Database constraints already covered by CI
+
+The schema smoke test verifies required tables, unique wallet and session digests, one result per run, run/player ownership via a composite foreign key, non-negative score constraints, consistent acceptance/rejection state, and optimistic progress revision updates. These tests validate PostgreSQL constraints; they do not prove that the Express API uses them.
+
+## Release gate
+
+Do not deploy this branch as a durable multiplayer backend while `/api/health` reports memory/JSON storage. Runtime PostgreSQL persistence, production-like integration tests, backup/restore verification, and an explicit deployment approval are mandatory gates. The current score plausibility checks are heuristic and client-reported; they are not server-authoritative anti-cheat.
