@@ -18,6 +18,11 @@ DECLARE
   revoked BOOLEAN;
   finalized_result UUID;
   finalize_run UUID;
+  created_session BOOLEAN;
+  validated_player UUID;
+  validated_wallet VARCHAR(44);
+  validation_expiry TIMESTAMPTZ;
+  session_digest CHAR(64);
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
     'players', 'wallet_challenges', 'player_sessions',
@@ -255,6 +260,39 @@ BEGIN
   IF revoked THEN
     RAISE EXCEPTION 'Repeated session revocation should be a no-op';
   END IF;
+
+  -- Session creation is restricted to enabled players and a maximum seven-day TTL.
+  session_digest := repeat('c', 64);
+  SELECT create_player_session(
+    gen_random_uuid(), second_player, session_digest, now() + interval '1 day'
+  ) INTO created_session;
+  IF created_session IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'Enabled player session could not be created';
+  END IF;
+
+  SELECT player_id, wallet_address, session_expires_at
+  INTO validated_player, validated_wallet, validation_expiry
+  FROM validate_player_session(session_digest);
+  IF validated_player IS DISTINCT FROM second_player
+     OR validated_wallet IS DISTINCT FROM '22222222222222222222222222222222'
+     OR validation_expiry <= now() THEN
+    RAISE EXCEPTION 'Valid session did not resolve to its player identity';
+  END IF;
+
+  UPDATE players SET disabled_at = now() WHERE id = second_player;
+  SELECT player_id INTO validated_player
+  FROM validate_player_session(session_digest);
+  IF validated_player IS NOT NULL THEN
+    RAISE EXCEPTION 'Disabled player session was validated';
+  END IF;
+
+  SELECT create_player_session(
+    gen_random_uuid(), second_player, repeat('d', 64), now() + interval '1 day'
+  ) INTO created_session;
+  IF created_session IS NOT NULL THEN
+    RAISE EXCEPTION 'Disabled player was allowed to create a session';
+  END IF;
+  UPDATE players SET disabled_at = NULL WHERE id = second_player;
 
   IF to_regclass('public.public_level_leaderboard') IS NULL THEN
     RAISE EXCEPTION 'Public level leaderboard view is missing';
