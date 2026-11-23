@@ -152,9 +152,10 @@ export async function connect(forceMock = false): Promise<void> {
 export async function signIn(): Promise<boolean> {
   if (state.status !== 'connected' || !state.address) return false;
   if (state.mode === 'mock') {
-    // Simulated verification: nothing is signed, nothing is sent on-chain.
-    set({ verified: true });
-    return true;
+    // A simulated wallet cannot prove address ownership. Keep it usable for
+    // local gameplay, but never label it as authenticated or server-verified.
+    set({ verified: false, error: 'Test wallets cannot authenticate with the server. Connect Phantom to verify ownership.' });
+    return false;
   }
   try {
     const nonce = await requestNonce(state.address);
