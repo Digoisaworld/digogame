@@ -221,19 +221,19 @@ BEGIN
 
   -- The progress function creates at revision zero and rejects stale writers.
   SELECT new_revision INTO saved_revision
-  FROM save_player_progress(test_player, '{"stage":1}'::jsonb, 0);
+  FROM save_player_progress(second_player, '{"stage":1}'::jsonb, 0);
   IF saved_revision IS DISTINCT FROM 1 THEN
     RAISE EXCEPTION 'Initial progress save did not create revision 1';
   END IF;
 
   SELECT new_revision INTO saved_revision
-  FROM save_player_progress(test_player, '{"stage":2}'::jsonb, 1);
+  FROM save_player_progress(second_player, '{"stage":2}'::jsonb, 1);
   IF saved_revision IS DISTINCT FROM 2 THEN
     RAISE EXCEPTION 'Progress save did not advance to revision 2';
   END IF;
 
   SELECT new_revision INTO saved_revision
-  FROM save_player_progress(test_player, '{"stage":99}'::jsonb, 1);
+  FROM save_player_progress(second_player, '{"stage":99}'::jsonb, 1);
   IF saved_revision IS NOT NULL THEN
     RAISE EXCEPTION 'Stale progress writer unexpectedly succeeded';
   END IF;
