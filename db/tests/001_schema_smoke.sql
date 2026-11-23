@@ -4,6 +4,8 @@ BEGIN;
 DO $$
 DECLARE
   required_table TEXT;
+  test_player UUID;
+  test_run UUID;
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
     'players', 'wallet_challenges', 'player_sessions',
@@ -41,6 +43,38 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Progress revision column is missing';
   END IF;
+
+  INSERT INTO players (wallet_address)
+  VALUES ('11111111111111111111111111111111')
+  RETURNING id INTO test_player;
+
+  INSERT INTO game_runs (
+    id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at
+  ) VALUES (
+    gen_random_uuid(), test_player, 1, 'island', 12345, repeat('a', 64),
+    now(), now() + interval '30 minutes'
+  ) RETURNING id INTO test_run;
+
+  INSERT INTO run_results (
+    run_id, player_id, score, bonus, digo, elapsed_ms,
+    stars, victory, accepted, rejection_code, submitted_payload
+  ) VALUES (
+    test_run, test_player, 100, 0, 1, 1000,
+    1, false, true, NULL, '{}'::jsonb
+  );
+
+  BEGIN
+    INSERT INTO run_results (
+      run_id, player_id, score, bonus, digo, elapsed_ms,
+      stars, victory, accepted, rejection_code, submitted_payload
+    ) VALUES (
+      test_run, test_player, 100, 0, 1, 1000,
+      1, false, true, NULL, '{}'::jsonb
+    );
+    RAISE EXCEPTION 'Duplicate result unexpectedly accepted';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
 END $$;
 
 ROLLBACK;
