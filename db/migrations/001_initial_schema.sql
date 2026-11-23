@@ -194,3 +194,56 @@ FROM (
   WHERE results.accepted = true
     AND players.disabled_at IS NULL
 ) AS ranked;
+
+
+-- Finalize a run exactly once, only for its owner and before ticket expiry.
+-- A NULL return means the run was missing, expired, already submitted, or the
+-- player was disabled. The result insert and submitted_at transition are one
+-- database statement/transaction from the caller's perspective.
+CREATE OR REPLACE FUNCTION finalize_game_run(
+  p_run_id UUID,
+  p_player_id UUID,
+  p_score BIGINT,
+  p_bonus BIGINT,
+  p_digo BIGINT,
+  p_elapsed_ms BIGINT,
+  p_stars SMALLINT,
+  p_victory BOOLEAN,
+  p_accepted BOOLEAN,
+  p_rejection_code TEXT,
+  p_submitted_payload JSONB
+)
+RETURNS UUID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  finalized_run UUID;
+  result_id UUID;
+BEGIN
+  UPDATE game_runs AS runs
+  SET submitted_at = clock_timestamp()
+  FROM players
+  WHERE runs.id = p_run_id
+    AND runs.player_id = p_player_id
+    AND players.id = runs.player_id
+    AND players.disabled_at IS NULL
+    AND runs.submitted_at IS NULL
+    AND runs.expires_at > clock_timestamp()
+  RETURNING runs.id INTO finalized_run;
+
+  IF finalized_run IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  INSERT INTO run_results (
+    run_id, player_id, score, bonus, digo, elapsed_ms,
+    stars, victory, accepted, rejection_code, submitted_payload
+  ) VALUES (
+    finalized_run, p_player_id, p_score, p_bonus, p_digo, p_elapsed_ms,
+    p_stars, p_victory, p_accepted, p_rejection_code, p_submitted_payload
+  )
+  RETURNING id INTO result_id;
+
+  RETURN result_id;
+END;
+$$;
