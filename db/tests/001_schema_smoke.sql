@@ -11,6 +11,7 @@ DECLARE
   test_session UUID;
   second_player UUID;
   ownership_run UUID;
+  progress_revision BIGINT;
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
     'players', 'wallet_challenges', 'player_sessions',
@@ -74,6 +75,25 @@ BEGIN
   EXCEPTION WHEN unique_violation THEN
     NULL;
   END;
+
+  -- Progress writes use optimistic concurrency to avoid lost updates.
+  INSERT INTO player_progress (player_id, progress, revision)
+  VALUES (test_player, '{"level":1}'::jsonb, 1);
+
+  UPDATE player_progress
+  SET progress = '{"level":2}'::jsonb, revision = revision + 1, updated_at = now()
+  WHERE player_id = test_player AND revision = 1
+  RETURNING revision INTO progress_revision;
+  IF progress_revision IS DISTINCT FROM 2 THEN
+    RAISE EXCEPTION 'Progress revision did not advance atomically';
+  END IF;
+
+  UPDATE player_progress
+  SET progress = '{"level":99}'::jsonb, revision = revision + 1, updated_at = now()
+  WHERE player_id = test_player AND revision = 1;
+  IF FOUND THEN
+    RAISE EXCEPTION 'Stale progress revision unexpectedly overwrote newer progress';
+  END IF;
 
   INSERT INTO game_runs (
     id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at
