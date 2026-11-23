@@ -247,3 +247,46 @@ BEGIN
   RETURN result_id;
 END;
 $$;
+
+
+-- Create a session only for an enabled player. The caller supplies a random
+-- opaque token digest; the bearer token itself must never enter PostgreSQL.
+CREATE OR REPLACE FUNCTION create_player_session(
+  p_session_id UUID,
+  p_player_id UUID,
+  p_token_sha256 CHAR(64),
+  p_expires_at TIMESTAMPTZ
+)
+RETURNS BOOLEAN
+LANGUAGE sql
+AS $$
+  INSERT INTO player_sessions (id, player_id, token_sha256, expires_at)
+  SELECT p_session_id, players.id, p_token_sha256, p_expires_at
+  FROM players
+  WHERE players.id = p_player_id
+    AND players.disabled_at IS NULL
+    AND p_expires_at > clock_timestamp()
+    AND p_expires_at <= clock_timestamp() + interval '7 days'
+  RETURNING true;
+$$;
+
+-- Validate a token by digest, update last_seen, and return only public player
+-- identity fields. Expired, revoked, disabled, or unknown sessions return no row.
+CREATE OR REPLACE FUNCTION validate_player_session(p_token_sha256 CHAR(64))
+RETURNS TABLE (
+  player_id UUID,
+  wallet_address VARCHAR(44),
+  session_expires_at TIMESTAMPTZ
+)
+LANGUAGE sql
+AS $$
+  UPDATE player_sessions AS sessions
+  SET last_seen_at = clock_timestamp()
+  FROM players
+  WHERE sessions.token_sha256 = p_token_sha256
+    AND sessions.player_id = players.id
+    AND sessions.revoked_at IS NULL
+    AND sessions.expires_at > clock_timestamp()
+    AND players.disabled_at IS NULL
+  RETURNING sessions.player_id, players.wallet_address, sessions.expires_at;
+$$;
