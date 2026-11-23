@@ -103,3 +103,27 @@ CREATE TABLE IF NOT EXISTS reward_ledger (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS reward_ledger_player_idx ON reward_ledger (player_id, created_at DESC);
+
+
+-- Atomically consume a wallet challenge. Concurrent verifiers can receive
+-- the challenge at most once; expired, mismatched, or already-consumed rows
+-- produce no result. The caller must still verify the returned message signature.
+CREATE OR REPLACE FUNCTION consume_wallet_challenge(
+  p_wallet_address VARCHAR(44),
+  p_message_sha256 CHAR(64)
+)
+RETURNS TABLE (
+  challenge_id UUID,
+  challenge_message TEXT,
+  challenge_expires_at TIMESTAMPTZ
+)
+LANGUAGE sql
+AS $$
+  UPDATE wallet_challenges AS challenge
+  SET consumed_at = clock_timestamp()
+  WHERE challenge.wallet_address = p_wallet_address
+    AND challenge.message_sha256 = p_message_sha256
+    AND challenge.consumed_at IS NULL
+    AND challenge.expires_at > clock_timestamp()
+  RETURNING challenge.id, challenge.message, challenge.expires_at;
+$$;
