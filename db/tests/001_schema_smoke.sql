@@ -342,6 +342,6 @@ BEGIN
   IF finalized_result IS NOT NULL THEN
     RAISE EXCEPTION 'A different player finalized another player run';
   END IF;
-END $;
+END $$;
 
 ROLLBACK;
