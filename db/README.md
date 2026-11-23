@@ -60,3 +60,14 @@ It requires the PostgreSQL `psql` client, stops on the first SQL error, and wrap
 ## Atomic wallet challenge consumption
 
 Migration 001 defines `consume_wallet_challenge(wallet_address, message_sha256)`. It atomically marks a matching, unexpired, unused challenge as consumed and returns its message only to the transaction that changed the row. Repeated or concurrent calls cannot consume the same challenge twice. The application must still verify the returned message's Ed25519 signature before creating a player session; consuming a challenge is not proof of wallet ownership by itself. CI smoke tests cover successful single use, replay rejection, and expiry.
+
+
+## Additional database primitives
+
+Migration 001 also provides:
+
+- `save_player_progress(player_id, progress, expected_revision)`: inserts at revision 1 when the expected revision is 0, or updates only when the stored revision matches the caller's expected revision. No returned row means the caller had a stale revision.
+- `revoke_player_session(session_id, player_id)`: revokes only an active session owned by that player; repeated revocation is a no-op.
+- `public_level_leaderboard`: exposes accepted results for enabled players, ranked per level by score descending and then submission time ascending.
+
+These are database primitives, not yet wired into Express routes. The CI schema test exercises create/update/stale progress writes, owner-only session revocation, repeated revocation, and leaderboard-view existence.
