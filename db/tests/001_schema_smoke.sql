@@ -12,6 +12,8 @@ DECLARE
   second_player UUID;
   ownership_run UUID;
   progress_revision BIGINT;
+  challenge_id UUID;
+  challenge_count INTEGER;
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
     'players', 'wallet_challenges', 'player_sessions',
@@ -62,6 +64,43 @@ BEGIN
   INSERT INTO players (wallet_address)
   VALUES ('22222222222222222222222222222222')
   RETURNING id INTO second_player;
+
+  -- Wallet challenge consumption is atomic and can succeed only once.
+  INSERT INTO wallet_challenges (
+    wallet_address, message, message_sha256, expires_at
+  ) VALUES (
+    '11111111111111111111111111111111',
+    'Sign in to DIGO test challenge',
+    repeat('f', 64),
+    now() + interval '5 minutes'
+  ) RETURNING id INTO challenge_id;
+
+  SELECT count(*) INTO challenge_count
+  FROM consume_wallet_challenge('11111111111111111111111111111111', repeat('f', 64));
+  IF challenge_count <> 1 THEN
+    RAISE EXCEPTION 'A valid wallet challenge was not consumed exactly once';
+  END IF;
+
+  SELECT count(*) INTO challenge_count
+  FROM consume_wallet_challenge('11111111111111111111111111111111', repeat('f', 64));
+  IF challenge_count <> 0 THEN
+    RAISE EXCEPTION 'A consumed wallet challenge was accepted a second time';
+  END IF;
+
+  INSERT INTO wallet_challenges (
+    wallet_address, message, message_sha256, expires_at
+  ) VALUES (
+    '11111111111111111111111111111111',
+    'Expired DIGO test challenge',
+    repeat('e', 64),
+    now() - interval '1 minute'
+  );
+
+  SELECT count(*) INTO challenge_count
+  FROM consume_wallet_challenge('11111111111111111111111111111111', repeat('e', 64));
+  IF challenge_count <> 0 THEN
+    RAISE EXCEPTION 'An expired wallet challenge was consumed';
+  END IF;
 
   INSERT INTO player_sessions (id, player_id, token_sha256, expires_at)
   VALUES (gen_random_uuid(), test_player, repeat('b', 64), now() + interval '7 days')
