@@ -247,7 +247,7 @@ function throttle(req, res, next) {
 
 function issueSession(address) {
   cleanupEphemeralState();
-  if (sessions.size >= MAX_SESSIONS) throw new Error('Session capacity reached; retry later.');
+  if (sessions.size >= MAX_SESSIONS) return null;
   const sid = crypto.randomUUID();
   const expiresAt = Date.now() + SESSION_TTL_MS;
   sessions.set(sid, { address, expiresAt });
@@ -518,6 +518,7 @@ app.post('/api/wallet/verify', throttle, (req, res) => {
   store.wallets[address] = { linkedAt, lastSeen: linkedAt };
   saveStoreSoon();
   const session = issueSession(address);
+  if (!session) return res.status(503).json({ error: 'Session capacity reached. Retry shortly.' });
   res.json({ verified: true, address, linkedAt, token: session.token, expiresAt: session.expiresAt });
 });
 
