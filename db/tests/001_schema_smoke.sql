@@ -6,6 +6,7 @@ DECLARE
   required_table TEXT;
   test_player UUID;
   test_run UUID;
+  test_session UUID;
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
     'players', 'wallet_challenges', 'player_sessions',
@@ -18,18 +19,15 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_indexes
-    WHERE schemaname = 'public'
-      AND tablename = 'run_results'
-      AND indexdef ILIKE '%UNIQUE%'
-      AND indexdef ILIKE '%run_id%'
+    WHERE schemaname = 'public' AND tablename = 'run_results'
+      AND indexdef ILIKE '%UNIQUE%' AND indexdef ILIKE '%run_id%'
   ) THEN
     RAISE EXCEPTION 'run_results must enforce one result per run';
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'player_sessions'
+    WHERE table_schema = 'public' AND table_name = 'player_sessions'
       AND column_name = 'token_sha256'
   ) THEN
     RAISE EXCEPTION 'Session token digest column is missing';
@@ -37,8 +35,7 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'player_progress'
+    WHERE table_schema = 'public' AND table_name = 'player_progress'
       AND column_name = 'revision'
   ) THEN
     RAISE EXCEPTION 'Progress revision column is missing';
@@ -47,6 +44,28 @@ BEGIN
   INSERT INTO players (wallet_address)
   VALUES ('11111111111111111111111111111111')
   RETURNING id INTO test_player;
+
+  -- A second player cannot claim the same wallet.
+  BEGIN
+    INSERT INTO players (wallet_address)
+    VALUES ('11111111111111111111111111111111');
+    RAISE EXCEPTION 'Duplicate wallet unexpectedly accepted';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
+
+  INSERT INTO player_sessions (id, player_id, token_sha256, expires_at)
+  VALUES (gen_random_uuid(), test_player, repeat('b', 64), now() + interval '7 days')
+  RETURNING id INTO test_session;
+
+  -- Session credential digests must be unique.
+  BEGIN
+    INSERT INTO player_sessions (id, player_id, token_sha256, expires_at)
+    VALUES (gen_random_uuid(), test_player, repeat('b', 64), now() + interval '7 days');
+    RAISE EXCEPTION 'Duplicate session digest unexpectedly accepted';
+  EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
 
   INSERT INTO game_runs (
     id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at
@@ -63,6 +82,7 @@ BEGIN
     1, false, true, NULL, '{}'::jsonb
   );
 
+  -- A run can be submitted only once, including retries.
   BEGIN
     INSERT INTO run_results (
       run_id, player_id, score, bonus, digo, elapsed_ms,
@@ -73,6 +93,34 @@ BEGIN
     );
     RAISE EXCEPTION 'Duplicate result unexpectedly accepted';
   EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
+
+  -- Negative score must be rejected by the database.
+  BEGIN
+    INSERT INTO run_results (
+      run_id, player_id, score, bonus, digo, elapsed_ms,
+      stars, victory, accepted, rejection_code, submitted_payload
+    ) VALUES (
+      gen_random_uuid(), test_player, -1, 0, 0, 1000,
+      0, false, true, NULL, '{}'::jsonb
+    );
+    RAISE EXCEPTION 'Negative score unexpectedly accepted';
+  EXCEPTION WHEN check_violation THEN
+    NULL;
+  END;
+
+  -- Accepted results cannot carry a rejection code.
+  BEGIN
+    INSERT INTO run_results (
+      run_id, player_id, score, bonus, digo, elapsed_ms,
+      stars, victory, accepted, rejection_code, submitted_payload
+    ) VALUES (
+      gen_random_uuid(), test_player, 0, 0, 0, 1000,
+      0, false, true, 'invalid', '{}'::jsonb
+    );
+    RAISE EXCEPTION 'Inconsistent acceptance state unexpectedly accepted';
+  EXCEPTION WHEN check_violation THEN
     NULL;
   END;
 END $$;
