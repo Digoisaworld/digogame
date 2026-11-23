@@ -9,6 +9,8 @@ DECLARE
   test_negative_run UUID;
   test_reason_run UUID;
   test_session UUID;
+  second_player UUID;
+  ownership_run UUID;
 BEGIN
   FOREACH required_table IN ARRAY ARRAY[
     'players', 'wallet_challenges', 'player_sessions',
@@ -56,6 +58,10 @@ BEGIN
     NULL;
   END;
 
+  INSERT INTO players (wallet_address)
+  VALUES ('22222222222222222222222222222222')
+  RETURNING id INTO second_player;
+
   INSERT INTO player_sessions (id, player_id, token_sha256, expires_at)
   VALUES (gen_random_uuid(), test_player, repeat('b', 64), now() + interval '7 days')
   RETURNING id INTO test_session;
@@ -95,6 +101,24 @@ BEGIN
     );
     RAISE EXCEPTION 'Duplicate result unexpectedly accepted';
   EXCEPTION WHEN unique_violation THEN
+    NULL;
+  END;
+
+  INSERT INTO game_runs (id, player_id, level_id, world_id, seed, ticket_sha256, started_at, expires_at)
+  VALUES (gen_random_uuid(), test_player, 1, 'island', 12348, repeat('e', 64), now(), now() + interval '30 minutes')
+  RETURNING id INTO ownership_run;
+
+  -- A different player cannot submit a result for this run.
+  BEGIN
+    INSERT INTO run_results (
+      run_id, player_id, score, bonus, digo, elapsed_ms,
+      stars, victory, accepted, rejection_code, submitted_payload
+    ) VALUES (
+      ownership_run, second_player, 1, 0, 0, 1000,
+      0, false, true, NULL, '{}'::jsonb
+    );
+    RAISE EXCEPTION 'Run result with a different owner unexpectedly accepted';
+  EXCEPTION WHEN foreign_key_violation THEN
     NULL;
   END;
 
