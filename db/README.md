@@ -23,3 +23,9 @@ This is a schema foundation only. The current Express API still uses its existin
 - Keep wallet identity anchored to the address whose Ed25519 signature was verified by the server.
 - Never store private keys or seed phrases.
 - `reward_ledger` is preparatory only. Real DIGO transfers remain disabled until an independently reviewed payout worker, treasury controls, and reconciliation process exist.
+
+## Runtime secret requirement
+
+The hardened API signs run tickets and session tokens with `RUN_SECRET`. In production this value must be supplied explicitly and contain at least 32 bytes; the process now refuses to start when it is absent or too short. Generate it once with a cryptographically secure generator, store it in the DIGO-only secret store, and keep it stable across restarts and replicas. Rotating it invalidates existing sessions and run tickets. Never commit the value, put it in a client bundle, or reuse an An Pardaz secret.
+
+The current runtime still uses process-local session/run maps and the optional JSON snapshot for leaderboard counters. This is not multi-instance safe and is not durable account/gameplay persistence. PostgreSQL integration and server-authoritative gameplay simulation are still outstanding.
