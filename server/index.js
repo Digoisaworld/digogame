@@ -361,7 +361,7 @@ app.post('/api/runs/start', throttle, requireSession, async (req, res) => {
   }
 });
 
-app.post('/api/runs', throttle, requireSession, (req, res) => {
+app.post('/api/runs', throttle, requireSession, async (req, res) => {
   const { token, result, name } = req.body ?? {};
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     return res.status(400).json({ accepted: false, reason: 'Malformed run result.' });
@@ -419,7 +419,7 @@ app.post('/api/runs', throttle, requireSession, (req, res) => {
   if (bonus < 0 || bonus > def.bonus) reasons.push('Completion bonus exceeds the level award.');
   if (bonus > 0 && elapsed < def.duration * 0.5) reasons.push('Completion bonus claimed too early.');
 
-  if (reasons.length) {
+  if (reasons.length && !pool) {
     store.runsRejected += 1;
     saveStoreSoon();
     return res.status(200).json({ accepted: false, reason: reasons[0] });
