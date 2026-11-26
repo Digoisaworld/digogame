@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-debug-apk:
-    name: Build Android debug APK
+  build-release:
+    name: Build signed Android release
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -56,9 +56,9 @@ jobs:
       - name: Sync web assets into Android project
         run: npx cap sync android
 
-      - name: Build debug APK and release bundle
+      - name: Build release APK and bundle
         working-directory: android
-        run: ./gradlew --no-daemon assembleDebug bundleRelease
+        run: ./gradlew --no-daemon assembleRelease bundleRelease
 
       - name: Configure release signing
         env:
@@ -69,8 +69,8 @@ jobs:
         shell: bash
         run: |
           if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" ]]; then
-            echo "Release signing secrets are not configured; producing debug APK and unsigned release AAB only."
-            exit 0
+            echo "::error::Release signing secrets are required. Configure all four ANDROID_* repository secrets before building a release."
+            exit 1
           fi
           umask 077
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/digo-release.keystore"
@@ -101,18 +101,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload release bundle
+      - name: Upload signed release bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.DIGO_KEYSTORE_PATH != '' && 'digo-evolution-release-aab-signed' || 'digo-evolution-release-aab-unsigned' }}
-          path: ${{ env.DIGO_KEYSTORE_PATH != '' && 'android/app/build/outputs/bundle/release/app-release-signed.aab' || 'android/app/build/outputs/bundle/release/app-release.aab' }}
+          name: digo-evolution-release-aab-signed
+          path: android/app/build/outputs/bundle/release/app-release-signed.aab
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: digo-evolution-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 14
