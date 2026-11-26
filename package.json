@@ -14,7 +14,8 @@
     "test": "node scripts/verify-campaign.mjs",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "db:migrate": "sh db/migrate.sh"
+    "db:migrate": "sh db/migrate.sh",
+    "test:api:postgres": "node scripts/test-api-postgres.mjs"
   },
   "dependencies": {
     "bs58": "^6.0.0",
