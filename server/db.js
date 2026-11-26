@@ -26,12 +26,29 @@ export const pool = databaseUrl
 
 let databaseReady = false;
 
+export async function query(text, values = []) {
+  if (!pool) throw new Error('PostgreSQL is not configured.');
+  return pool.query(text, values);
+}
+
 export async function verifyDatabase() {
   if (!pool) {
     databaseReady = false;
     return false;
   }
-  await pool.query('SELECT 1');
+  const result = await pool.query(`
+    SELECT
+      to_regclass('public.players') IS NOT NULL AS players,
+      to_regclass('public.wallet_challenges') IS NOT NULL AS wallet_challenges,
+      to_regclass('public.player_sessions') IS NOT NULL AS player_sessions,
+      to_regclass('public.game_runs') IS NOT NULL AS game_runs,
+      to_regclass('public.run_results') IS NOT NULL AS run_results
+  `);
+  const schema = result.rows[0];
+  if (!Object.values(schema).every(Boolean)) {
+    databaseReady = false;
+    throw new Error('PostgreSQL schema is missing. Apply db/migrations/001_initial_schema.sql before starting production.');
+  }
   databaseReady = true;
   return true;
 }
