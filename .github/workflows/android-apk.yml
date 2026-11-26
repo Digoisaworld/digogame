@@ -61,15 +61,24 @@ jobs:
         run: ./gradlew --no-daemon assembleDebug bundleRelease
 
       - name: Configure release signing
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/digo-release.keystore"
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" ]]; then
+            echo "Release signing secrets are not configured; producing debug APK and unsigned release AAB only."
+            exit 0
+          fi
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/digo-release.keystore"
+          test -s "$RUNNER_TEMP/digo-release.keystore"
           echo "DIGO_KEYSTORE_PATH=$RUNNER_TEMP/digo-release.keystore" >> "$GITHUB_ENV"
-          echo "DIGO_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
-          echo "DIGO_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
-          echo "DIGO_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "DIGO_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "DIGO_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "DIGO_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Sign release APK and verify certificate
         if: ${{ env.DIGO_KEYSTORE_PATH != '' }}
@@ -81,8 +90,7 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose app/build/outputs/apk/release/app-release-signed.apk
           "$BUILD_TOOLS/apksigner" verify --print-certs app/build/outputs/apk/release/app-release-signed.apk
           jarsigner -keystore "$DIGO_KEYSTORE_PATH" -storepass "$DIGO_KEYSTORE_PASSWORD" -keypass "$DIGO_KEY_PASSWORD" -signedjar app/build/outputs/bundle/release/app-release-signed.aab app/build/outputs/bundle/release/app-release.aab "$DIGO_KEY_ALIAS"
-          mv app/build/outputs/bundle/release/app-release-signed.aab app/build/outputs/bundle/release/app-release.aab
-          jarsigner -verify -strict -certs app/build/outputs/bundle/release/app-release.aab
+          jarsigner -verify -strict -certs app/build/outputs/bundle/release/app-release-signed.aab
 
       - name: Upload signed release APK
         if: ${{ env.DIGO_KEYSTORE_PATH != '' }}
@@ -97,7 +105,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.DIGO_KEYSTORE_PATH != '' && 'digo-evolution-release-aab-signed' || 'digo-evolution-release-aab-unsigned' }}
-          path: android/app/build/outputs/bundle/release/app-release.aab
+          path: ${{ env.DIGO_KEYSTORE_PATH != '' && 'android/app/build/outputs/bundle/release/app-release-signed.aab' || 'android/app/build/outputs/bundle/release/app-release.aab' }}
           if-no-files-found: error
           retention-days: 30
 
