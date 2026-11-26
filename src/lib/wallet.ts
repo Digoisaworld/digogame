@@ -21,7 +21,7 @@ import {
   isPhantomInstalled,
   signChallenge,
 } from './phantom';
-import { requestNonce, verifyWallet } from './api';
+import { logoutSession, requestNonce, setApiSession, verifyWallet } from './api';
 
 export type WalletMode = 'phantom' | 'mock';
 export type WalletStatus = 'disconnected' | 'connecting' | 'connected';
@@ -65,7 +65,7 @@ function set(patch: Partial<WalletState>): void {
       JSON.stringify({
         address: state.address,
         mode: state.mode,
-        verified: state.verified,
+        verified: false,
         balance: state.balance,
       }),
     );
@@ -97,7 +97,7 @@ export function initWallet(): void {
     installed,
     address: restored.address ?? null,
     mode: restored.mode === 'phantom' ? 'phantom' : 'mock',
-    verified: Boolean(restored.verified),
+    verified: false,
     balance: typeof restored.balance === 'number' ? restored.balance : 0,
     status: restored.address ? 'connected' : 'disconnected',
   };
@@ -152,14 +152,16 @@ export async function connect(forceMock = false): Promise<void> {
 export async function signIn(): Promise<boolean> {
   if (state.status !== 'connected' || !state.address) return false;
   if (state.mode === 'mock') {
-    // Simulated verification: nothing is signed, nothing is sent on-chain.
-    set({ verified: true });
-    return true;
+    // A simulated wallet cannot prove address ownership. Keep it usable for
+    // local gameplay, but never label it as authenticated or server-verified.
+    set({ verified: false, error: 'Test wallets cannot authenticate with the server. Connect Phantom to verify ownership.' });
+    return false;
   }
   try {
     const nonce = await requestNonce(state.address);
     const signature = await signChallenge(nonce.message);
     const res = await verifyWallet(state.address, signature, nonce.message);
+    setApiSession(res.token);
     set({ verified: res.verified });
     return res.verified;
   } catch (err) {
@@ -169,6 +171,7 @@ export async function signIn(): Promise<boolean> {
 }
 
 export async function disconnect(): Promise<void> {
+  try { await logoutSession(); } catch { setApiSession(null); }
   if (state.mode === 'phantom') await phantomDisconnect();
   set({ status: 'disconnected', address: null, verified: false, error: null, mode: 'mock' });
 }

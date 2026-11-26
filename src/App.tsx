@@ -68,7 +68,7 @@ export function App() {
       let verified = false;
       if (current.name === 'game' && current.token) {
         try {
-          const res = await submitRun(current.token, result, 'DIGO Player', wallet.address);
+          const res = await submitRun(current.token, result, 'DIGO Player');
           verified = Boolean(res.accepted);
           verdict = res.accepted
             ? `Server verified${res.rank ? ` · rank #${res.rank}` : ''}`
