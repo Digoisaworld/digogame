@@ -20,6 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
+import { verifyDatabase, databaseStatus, closeDatabase } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, '..', 'dist');
@@ -286,10 +287,14 @@ app.post('/api/auth/logout', requireSession, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/health', (_req, res) => {
-  res.json({
-    ok: true,
+app.get('/api/health', async (_req, res) => {
+  let dbHealthy = false;
+  try { dbHealthy = await verifyDatabase(); } catch { dbHealthy = false; }
+  const db = databaseStatus();
+  res.status(db.configured && !dbHealthy ? 503 : 200).json({
+    ok: !db.configured || dbHealthy,
     service: 'digo-evolution',
+    database: { ...db, ready: dbHealthy },
     uptime: Math.round(process.uptime()),
     cluster: SOLANA_CLUSTER,
     storage: STORE_FILE ? 'json-snapshot (non-durable runtime state)' : 'memory (non-durable)',
@@ -548,17 +553,30 @@ if (fs.existsSync(DIST_DIR)) {
   });
 }
 
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`DIGO EVOLUTION server listening on 0.0.0.0:${PORT}`);
-  console.log(`  client:  ${fs.existsSync(DIST_DIR) ? DIST_DIR : 'not built yet'}`);
-  console.log(`  storage: ${STORE_FILE ? STORE_FILE : 'in-memory'}`);
-  console.log(`  cluster: ${SOLANA_CLUSTER} (wallet verification only, no transactions)`);
+let server;
+async function startServer() {
+  if (process.env.NODE_ENV === 'production') {
+    await verifyDatabase();
+    console.log('  database: PostgreSQL connection verified');
+  }
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`DIGO EVOLUTION server listening on 0.0.0.0:${PORT}`);
+    console.log(`  client:  ${fs.existsSync(DIST_DIR) ? DIST_DIR : 'not built yet'}`);
+    console.log(`  storage: ${databaseStatus().engine}`);
+    console.log(`  cluster: ${SOLANA_CLUSTER} (wallet verification only, no transactions)`);
+  });
+}
+startServer().catch((error) => {
+  console.error('DIGO EVOLUTION startup failed:', error.message);
+  process.exitCode = 1;
+  closeDatabase().finally(() => process.exit(1));
 });
 
 function shutdown(signal) {
   console.log(`${signal} received, closing server`);
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 4000).unref();
+  if (server) server.close(() => closeDatabase().finally(() => process.exit(0)));
+  else closeDatabase().finally(() => process.exit(0));
+  setTimeout(() => process.exit(1), 8000).unref();
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
