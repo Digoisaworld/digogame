@@ -519,20 +519,40 @@ app.post('/api/runs', throttle, requireSession, (req, res) => {
   });
 });
 
-app.get('/api/leaderboard', (req, res) => {
+app.get('/api/leaderboard', async (req, res) => {
   const level = int(req.query.level) ?? 1;
   const def = LEVEL_MAP.get(level);
   if (!def) return res.status(400).json({ error: 'Unknown level.' });
   const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+  if (pool) {
+    try {
+      const result = await query(`SELECT p.display_name AS name, gr.level_id AS level,
+        gr.world_id AS world, rr.score::bigint AS score,
+        (rr.score+rr.bonus)::bigint AS total, rr.stars,
+        (extract(epoch FROM rr.created_at)*1000)::bigint AS at,
+        p.wallet_address AS address
+        FROM run_results rr JOIN game_runs gr ON gr.id=rr.run_id
+        JOIN players p ON p.id=rr.player_id
+        WHERE rr.accepted=true AND gr.level_id=$1 AND p.disabled_at IS NULL
+        ORDER BY (rr.score+rr.bonus) DESC, rr.created_at ASC LIMIT $2`,
+      [def.id, limit]);
+      const count = await query(`SELECT count(*)::int AS total FROM run_results rr
+        JOIN game_runs gr ON gr.id=rr.run_id JOIN players p ON p.id=rr.player_id
+        WHERE rr.accepted=true AND gr.level_id=$1 AND p.disabled_at IS NULL`, [def.id]);
+      const entries = result.rows.map((row) => ({
+        ...row, score: Number(row.score), total: Number(row.total), at: Number(row.at),
+        address: row.address ? `${row.address.slice(0, 4)}…${row.address.slice(-4)}` : null,
+      }));
+      return res.json({ level: def.id, entries, source: 'postgresql', total: count.rows[0]?.total ?? entries.length });
+    } catch (error) {
+      console.error('Leaderboard query failed:', error.message);
+      return res.status(503).json({ error: 'Leaderboard storage is temporarily unavailable.' });
+    }
+  }
   const list = store.leaderboard[String(def.id)] ?? [];
   const entries = list.slice(0, limit).map((e) => ({
-    name: e.name,
-    level: e.level,
-    world: e.world,
-    score: e.score,
-    total: e.total,
-    stars: e.stars,
-    at: e.at,
+    name: e.name, level: e.level, world: e.world, score: e.score,
+    total: e.total, stars: e.stars, at: e.at,
     address: e.address ? `${e.address.slice(0, 4)}…${e.address.slice(-4)}` : null,
   }));
   res.json({ level: def.id, entries, source: 'server', total: list.length });
