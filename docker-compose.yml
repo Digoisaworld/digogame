@@ -14,6 +14,9 @@ services:
       PORT: "3000"
       DATA_DIR: /data
       RUN_SECRET: ${RUN_SECRET:?Set RUN_SECRET in the VPS .env file}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the VPS .env file}
+    networks:
+      - digogame-net
     ports:
       - "127.0.0.1:${HOST_PORT:-3100}:3000"
     volumes:
@@ -35,6 +38,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+networks:
+  digogame-net:
+    external: true
+    name: digogame-net
 
 volumes:
   digo-game-data:
