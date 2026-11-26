@@ -1,21 +1,20 @@
-FROM node:26-alpine AS build
-RUN apk upgrade --no-cache
+# Keep the runtime aligned with the Node 22 LTS version used by CI.
+FROM node:22-alpine AS build
 WORKDIR /app
-COPY package*.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
-# The build needs dev dependencies; they are removed before the copy below.
 RUN npm run build && npm prune --omit=dev
-FROM node:26-alpine
-# The date keys the build cache so this layer installs today's OS fixes; AppJet keeps it current on deploy.
-RUN echo "os-refresh 2026-11-22" && apk upgrade --no-cache
+
+FROM node:22-alpine AS runtime
 WORKDIR /app
-COPY --from=build /app ./
 ENV NODE_ENV=production
 ENV PORT=3000
-EXPOSE 3000
-# IMPORTANT: your server MUST listen on 0.0.0.0 and process.env.PORT.
-RUN mkdir -p /app /home/appjet && chown -R 10001:10001 /app /home/appjet
-ENV HOME=/home/appjet
+COPY --from=build --chown=10001:10001 /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=10001:10001 /app/node_modules ./node_modules
+COPY --from=build --chown=10001:10001 /app/dist ./dist
+COPY --from=build --chown=10001:10001 /app/server ./server
+RUN mkdir -p /data && chown -R 10001:10001 /data /app
 USER 10001:10001
-CMD ["npm","start"]
+EXPOSE 3000
+CMD ["npm", "start"]
