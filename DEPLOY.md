@@ -94,7 +94,7 @@ set -a
 set +a
 docker run --rm --network digogame-net \
   -e DATABASE_URL="$DATABASE_URL" \
-  -v "$PWD:/app:ro" -w /app node:26-alpine sh -c \
+  -v "$PWD:/app:ro" -w /app node:22-alpine sh -c \
   'apk add --no-cache postgresql-client >/dev/null && sh db/migrate.sh'
 unset DATABASE_URL RUN_SECRET
 ```
@@ -148,7 +148,7 @@ Do not restore the database dump over the live database unless a deliberate reco
 ## Current limitations and release gates
 
 - This branch contains PostgreSQL persistence for wallet challenges, player sessions, game runs, results, and leaderboard. It does not import historical JSON leaderboard data.
-- The CI suite validates schema helpers and game regression tests; it is not a full live Phantom-to-leaderboard end-to-end test.
+- GitHub Actions validates the PostgreSQL schema, runs a PostgreSQL-backed HTTP API integration flow (wallet challenge/signature verification, run ticket, accepted result, replay rejection, and persistent leaderboard), checks TypeScript/gameplay regressions, builds the production bundle, and builds the production Docker image. This is CI evidence, not a live VPS or real Phantom mobile-device test.
 - Campaign progress/local UI state may still be browser-local; do not promise cross-device recovery unless separately verified.
 - Phantom ownership verification is not a token payout. No SPL transfer, withdrawal, or real DIGO reward is enabled.
 - Do not enable token withdrawals or advertise monetary rewards until idempotent on-chain payout controls, anti-cheat review, rate limiting, monitoring, and tested backup/restore procedures are implemented.
