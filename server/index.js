@@ -335,27 +335,30 @@ app.get('/api/health', async (_req, res) => {
 
 /* ------------------------------- runs ------------------------------ */
 
-app.post('/api/runs/start', throttle, requireSession, (req, res) => {
+app.post('/api/runs/start', throttle, requireSession, async (req, res) => {
   const level = int(req.body?.level);
   const def = level === null ? null : LEVEL_MAP.get(level);
   if (!def) return res.status(400).json({ error: 'Unknown level.' });
-
   const payload = {
-    rid: crypto.randomUUID(),
-    seed: crypto.randomInt(1, 2 ** 31 - 1),
-    level: def.id,
-    world: def.world,
-    address: req.player.address,
-    iat: Date.now(),
+    rid: crypto.randomUUID(), seed: crypto.randomInt(1, 2 ** 31 - 1),
+    level: def.id, world: def.world, address: req.player.address, iat: Date.now(),
   };
-  store.runsStarted += 1;
-  saveStoreSoon();
-  res.json({
-    runId: payload.rid,
-    seed: payload.seed,
-    startedAt: payload.iat,
-    token: signTicket(payload),
-  });
+  try {
+    if (pool) {
+      await query(`INSERT INTO game_runs
+        (id,player_id,level_id,world_id,seed,ticket_sha256,started_at,expires_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [payload.rid, req.player.id, payload.level, payload.world, payload.seed,
+        crypto.createHash('sha256').update(signTicket(payload)).digest('hex'),
+        new Date(payload.iat), new Date(payload.iat + TICKET_TTL_MS)]);
+    }
+    store.runsStarted += 1;
+    saveStoreSoon();
+    res.json({ runId: payload.rid, seed: payload.seed, startedAt: payload.iat, token: signTicket(payload) });
+  } catch (error) {
+    console.error('Run start persistence failed:', error.message);
+    res.status(503).json({ error: 'Could not start a durable game run. Retry shortly.' });
+  }
 });
 
 app.post('/api/runs', throttle, requireSession, (req, res) => {
