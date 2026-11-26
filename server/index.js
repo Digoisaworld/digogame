@@ -455,6 +455,8 @@ app.post('/api/runs', throttle, requireSession, async (req, res) => {
         store.runsRejected += 1; saveStoreSoon();
         return res.status(200).json({ accepted: false, reason: reasons[0] });
       }
+      // Keep the public leaderboard name in sync only after a verified run is accepted.
+      await query('UPDATE players SET display_name=$1, last_seen_at=now() WHERE id=$2 AND disabled_at IS NULL', [cleanNameValue, req.player.id]);
       const ranking = await query(`SELECT count(*)::int + 1 AS rank
         FROM run_results rr JOIN game_runs gr ON gr.id=rr.run_id
         JOIN players p ON p.id=rr.player_id
