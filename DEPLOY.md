@@ -1,103 +1,155 @@
-# DIGO game — VPS deployment
+# DIGO EVOLUTION — production VPS deployment
 
-This guide deploys the single-container game/API service on a Linux VPS with Docker Engine and Docker Compose v2.
+This guide targets the isolated DIGO game stack on the existing An Pardaz Docker VPS. It does **not** modify An Pardaz services. Deploy only after reviewing the commands and confirming the target host and backup location.
 
-## What this deploys
+## Deployment architecture
 
-- React/Vite game served by the Express API on port 3000 inside the container.
-- Host binding defaults to `127.0.0.1:3100`, intended to sit behind an existing HTTPS reverse proxy.
-- Persistent Docker volume `digo-game-data` mounted at `/data` for the current JSON leaderboard/wallet snapshot.
-- Non-root container, read-only root filesystem, dropped Linux capabilities, health check, and restart policy.
+- Express serves the built React/Vite game and API on container port 3000.
+- Docker publishes the game API only on host loopback: `127.0.0.1:3100` by default. Put the public game hostname behind the existing HTTPS reverse proxy.
+- PostgreSQL is the dedicated `digogame-postgres` container on the private external Docker network `digogame-net`. The database has no public host port.
+- The Compose app container is `digo-game`; its persistent application volume is `digo-game-data`.
+- Production startup is fail-closed: it requires a 32-byte `RUN_SECRET`, a `DATABASE_URL`, and the migrated PostgreSQL schema. Do not start it before the migration is verified.
+- No real DIGO token transfer or payout is implemented. Game points are not on-chain tokens.
 
-## 1. Prepare the VPS
+## 1. Preflight — read-only checks
 
-Install Docker Engine and the Docker Compose v2 plugin. Confirm:
+Run from the VPS:
 
 ```bash
 docker --version
 docker compose version
+docker network inspect digogame-net
+docker inspect --format '{{.Name}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}' digogame-postgres
+docker exec digogame-postgres pg_isready -U digogame -d digogame
+df -h /
+free -h
 ```
 
-## 2. Get the verified source
+Stop if the dedicated database is not healthy, the network is missing, or disk space is insufficient. Do not recreate, remove, prune, or modify any existing An Pardaz container, network, or volume.
+
+## 2. Fetch the reviewed application branch
+
+The PostgreSQL integration is on the dedicated branch below. Do not deploy `main` or merge the draft pull request as part of this procedure.
 
 ```bash
-git clone https://github.com/Digoisaworld/digogame.git
-cd digogame
-git checkout main
-git pull --ff-only origin main
+cd /opt
+git clone --branch feat/digogame-production-postgres --single-branch https://github.com/Digoisaworld/digogame.git digogame
+cd /opt/digogame
+git status --short --branch
+git log -1 --oneline
 ```
 
-## 3. Create production secrets
+If `/opt/digogame` already exists, do not clone over it. Inspect its status and back it up before changing branches or files.
 
-Do not commit the production `.env` file or send its contents in chat.
+## 3. Configure secrets without exposing them
+
+Create the project-level `.env` file. Compose interpolates `RUN_SECRET` and `DATABASE_URL` from this file before container creation; the service's `env_file` alone is not sufficient for those required interpolations.
 
 ```bash
+cd /opt/digogame
+umask 077
 cp .env.example .env
-chmod 600 .env
-```
-
-Generate a strong persistent run-ticket secret:
-
-```bash
 openssl rand -hex 32
 ```
 
-Edit `.env` and set at least:
+Edit `.env` locally on the VPS and set:
 
-```dotenv
-PORT=3000
-RUN_SECRET=PASTE_THE_GENERATED_RANDOM_SECRET_HERE
-DATA_DIR=/data
-SOLANA_CLUSTER=mainnet-beta
-ALLOWED_ORIGINS=
-```
+- `RUN_SECRET`: output of `openssl rand -hex 32` (keep stable across restarts).
+- `DATABASE_URL`: `postgresql://digogame:<URL-ENCODED_PASSWORD>@digogame-postgres:5432/digogame`.
+- `HOST_PORT=3100` (optional; default is 3100).
 
-Keep the same `RUN_SECRET` across restarts and deployments. The game is same-origin by default, so leave `ALLOWED_ORIGINS` empty when the reverse proxy serves the game and API on the same host.
-
-## 4. Build and start
-
-Default host port is 3100 and is bound only to loopback:
+Use the existing dedicated database password stored on the VPS; do not print it, paste it into chat, or commit it. URL-encode special characters in the password. Keep the file private:
 
 ```bash
-docker compose up -d --build
-docker compose ps
+chmod 600 .env
+
+grep -E '^(RUN_SECRET|DATABASE_URL)=' .env | sed -E 's/=.*/=<redacted>/'
+```
+
+Do not replace or rotate the database password during this deployment.
+
+## 4. Back up PostgreSQL before migration
+
+Use a timestamped backup path with adequate free space. This exports only the DIGO database:
+
+```bash
+mkdir -p /opt/digogame/backups
+chmod 700 /opt/digogame/backups
+BACKUP="/opt/digogame/backups/digogame-before-migration-$(date -u +%Y%m%dT%H%M%SZ).dump"
+docker exec digogame-postgres pg_dump -U digogame -d digogame -Fc > "$BACKUP"
+test -s "$BACKUP"
+chmod 600 "$BACKUP"
+```
+
+Do not continue unless the dump exists and is non-empty. Keep the backup outside the application container and do not upload it to GitHub.
+
+## 5. Apply schema migration
+
+The migration is a database write. Confirm the backup first, then run:
+
+```bash
+cd /opt/digogame
+set -a
+. ./.env
+set +a
+docker run --rm --network digogame-net \
+  -e DATABASE_URL="$DATABASE_URL" \
+  -v "$PWD:/app:ro" -w /app node:26-alpine sh -c \
+  'apk add --no-cache postgresql-client >/dev/null && sh db/migrate.sh'
+unset DATABASE_URL RUN_SECRET
+```
+
+Then verify required tables exist:
+
+```bash
+docker exec digogame-postgres psql -U digogame -d digogame -v ON_ERROR_STOP=1 -c \
+"SELECT to_regclass('public.players'), to_regclass('public.wallet_challenges'), to_regclass('public.player_sessions'), to_regclass('public.game_runs'), to_regclass('public.run_results');"
+```
+
+All five results must be non-NULL. If migration or verification fails, do not start the app; preserve the backup and investigate.
+
+## 6. Build and start only the DIGO service
+
+Run Compose from `/opt/digogame`, where the project-level `.env` is located:
+
+```bash
+cd /opt/digogame
+docker compose config --quiet
+docker compose build digo-game
+docker compose up -d --no-deps digo-game
+docker compose ps digo-game
 docker compose logs --tail=100 digo-game
 ```
 
-To use another local port, set `HOST_PORT` in the shell before starting, for example:
+Do not run `docker compose down`, global prune commands, or commands against other projects. The app binds to loopback only; do not publish PostgreSQL or container port 3000 publicly.
+
+## 7. Verify before enabling public traffic
 
 ```bash
-HOST_PORT=3200 docker compose up -d --build
+curl --fail --silent --show-error http://127.0.0.1:3100/api/health
+docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' digo-game
 ```
 
-## 5. Verify the API
+Expected health JSON has `"ok":true`, `"database":{"configured":true,"ready":true,...}`, and PostgreSQL storage. If health is not successful, keep the reverse-proxy route disabled and inspect the DIGO container logs. Do not weaken the fail-closed database check.
 
-```bash
-curl --fail http://127.0.0.1:3100/api/health
-```
+Only after the health check succeeds should the existing reverse proxy be configured to forward the game hostname to `http://127.0.0.1:3100` with HTTPS. Review the proxy configuration and reload only the relevant proxy service after taking its configuration backup; do not replace the site's existing configuration wholesale.
 
-Expected response includes `"ok":true` and `"storage":"file"`.
+## 8. Rollback
 
-Then configure the VPS reverse proxy to forward the chosen loopback port to the public game hostname with HTTPS. Do not expose port 3000 or the Docker container directly to the public internet.
+If the application fails after the schema migration:
 
-## 6. Updates and rollback
+1. Disable/withdraw only the DIGO game reverse-proxy route.
+2. Stop only the DIGO application container: `docker compose stop digo-game`.
+3. Preserve container logs, the Git commit SHA, and the database backup.
+4. Rebuild/redeploy the previously verified DIGO application revision only after confirming schema compatibility.
 
-Update to the latest verified main branch:
+Do not restore the database dump over the live database unless a deliberate recovery decision has been made; restore is destructive to data written after the backup. Never delete `digogame_pgdata` or `digo-game-data`.
 
-```bash
-git fetch origin
-git checkout main
-git pull --ff-only origin main
-docker compose up -d --build
-docker compose ps
-curl --fail http://127.0.0.1:3100/api/health
-```
+## Current limitations and release gates
 
-Keep a backup of the persistent volume before upgrades. The volume is named `digo-game-data`.
-
-## Important current product limitations
-
-- The API's leaderboard and linked-wallet snapshot are persisted as a JSON file. This is suitable only for a single application instance; do not run multiple replicas sharing independent local stores.
-- Player campaign progress and lifetime points are currently stored in browser localStorage, not in a server-side player account database. Clearing browser storage or switching devices can therefore lose/split that progress. Do not promise cross-device account recovery yet.
-- Phantom integration verifies wallet ownership/signatures and supports the current mock/test gate. It does not send SPL token transactions or pay real DIGO tokens.
-- Before real token rewards or a large public launch, add PostgreSQL-backed player profiles, idempotent reward ledgering, stronger anti-cheat/rate limiting, monitoring, backups, and a security review.
+- This branch contains PostgreSQL persistence for wallet challenges, player sessions, game runs, results, and leaderboard. It does not import historical JSON leaderboard data.
+- The CI suite validates schema helpers and game regression tests; it is not a full live Phantom-to-leaderboard end-to-end test.
+- Campaign progress/local UI state may still be browser-local; do not promise cross-device recovery unless separately verified.
+- Phantom ownership verification is not a token payout. No SPL transfer, withdrawal, or real DIGO reward is enabled.
+- Do not enable token withdrawals or advertise monetary rewards until idempotent on-chain payout controls, anti-cheat review, rate limiting, monitoring, and tested backup/restore procedures are implemented.
+- Android APK/AAB packaging and Phantom mobile deep-link integration are separate work and are not delivered by this VPS deployment.
