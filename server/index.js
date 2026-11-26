@@ -48,7 +48,10 @@ import { LEVEL_MAP } from './campaign.js';
 const MAX_SCORE_PER_SECOND = 620;
 /** Highest DIGO a single collected reward can be worth (legendary relic). */
 const MAX_DIGO_PER_REWARD = 15;
-const TICKET_TTL_MS = 3 * 60 * 60 * 1000;
+const TICKET_TTL_MS = 30 * 60 * 1000;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const sessions = new Map();
+const usedRuns = new Map();
 const LEADERBOARD_LIMIT = 100;
 
 /* ------------------------------------------------------------------ */
@@ -162,8 +165,14 @@ function validAddress(addr) {
 
 const app = express();
 app.disable('x-powered-by');
-app.set('trust proxy', true);
-app.use(express.json({ limit: '32kb' }));
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '16kb', strict: true }));
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
 
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -180,10 +189,10 @@ app.use((req, res, next) => {
   next();
 });
 
-/* Simple per-IP throttle for the mutating endpoints. */
+/* Bounded in-process throttling. Shared limits will move to persistent infrastructure later. */
 const hits = new Map();
 function throttle(req, res, next) {
-  const key = req.ip || 'anon';
+  const key = `${req.ip || 'anon'}:${req.path}`;
   const now = Date.now();
   const bucket = hits.get(key) ?? { count: 0, reset: now + 60_000 };
   if (now > bucket.reset) {
@@ -192,9 +201,45 @@ function throttle(req, res, next) {
   }
   bucket.count += 1;
   hits.set(key, bucket);
-  if (bucket.count > 120) return res.status(429).json({ error: 'Too many requests, slow down.' });
+  if (hits.size > 10000) {
+    for (const [k, v] of hits) if (now > v.reset) hits.delete(k);
+  }
+  if (bucket.count > 60) return res.status(429).json({ error: 'Too many requests, slow down.' });
   next();
 }
+
+function issueSession(address) {
+  const sid = crypto.randomUUID();
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  sessions.set(sid, { address, expiresAt });
+  const body = b64url(JSON.stringify({ sid, address, exp: expiresAt }));
+  const mac = crypto.createHmac('sha256', RUN_SECRET).update('session.' + body).digest('base64url');
+  return { token: body + '.' + mac, expiresAt };
+}
+
+function requireSession(req, res, next) {
+  const match = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(req.headers.authorization || '');
+  if (!match) return res.status(401).json({ error: 'Wallet sign-in required.' });
+  const [body, mac] = match[1].split('.');
+  if (!body || !mac) return res.status(401).json({ error: 'Invalid session.' });
+  const expected = crypto.createHmac('sha256', RUN_SECRET).update('session.' + body).digest('base64url');
+  const a = Buffer.from(mac); const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Invalid session.' });
+  let payload;
+  try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { return res.status(401).json({ error: 'Invalid session.' }); }
+  const session = sessions.get(payload.sid);
+  if (!session || session.address !== payload.address || session.expiresAt !== payload.exp || Date.now() >= payload.exp) {
+    sessions.delete(payload.sid);
+    return res.status(401).json({ error: 'Session expired. Sign in again.' });
+  }
+  req.player = { address: session.address, sid: payload.sid };
+  next();
+}
+
+app.post('/api/auth/logout', requireSession, (req, res) => {
+  sessions.delete(req.player.sid);
+  res.json({ ok: true });
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -209,7 +254,7 @@ app.get('/api/health', (_req, res) => {
 
 /* ------------------------------- runs ------------------------------ */
 
-app.post('/api/runs/start', throttle, (req, res) => {
+app.post('/api/runs/start', throttle, requireSession, (req, res) => {
   const level = int(req.body?.level);
   const def = level === null ? null : LEVEL_MAP.get(level);
   if (!def) return res.status(400).json({ error: 'Unknown level.' });
@@ -219,6 +264,7 @@ app.post('/api/runs/start', throttle, (req, res) => {
     seed: crypto.randomInt(1, 2 ** 31 - 1),
     level: def.id,
     world: def.world,
+    address: req.player.address,
     iat: Date.now(),
   };
   store.runsStarted += 1;
@@ -231,8 +277,8 @@ app.post('/api/runs/start', throttle, (req, res) => {
   });
 });
 
-app.post('/api/runs', throttle, (req, res) => {
-  const { token, result, name, address } = req.body ?? {};
+app.post('/api/runs', throttle, requireSession, (req, res) => {
+  const { token, result, name } = req.body ?? {};
   const ticket = readTicket(token);
   if (!ticket) {
     store.runsRejected += 1;
@@ -245,6 +291,10 @@ app.post('/api/runs', throttle, (req, res) => {
   if (elapsed === null || score === null || elapsed < 0 || score < 0) {
     return res.status(400).json({ accepted: false, reason: 'Malformed run result.' });
   }
+
+  if (ticket.address !== req.player.address) return res.status(403).json({ accepted: false, reason: 'Run belongs to another wallet.' });
+  if (usedRuns.has(ticket.rid)) return res.status(409).json({ accepted: false, reason: 'Run result already submitted.' });
+  if (!Number.isFinite(ticket.iat) || Date.now() - ticket.iat > TICKET_TTL_MS || Date.now() < ticket.iat - 5000) return res.status(400).json({ accepted: false, reason: 'Run ticket expired.' });
 
   const def = LEVEL_MAP.get(ticket.level);
   if (!def) {
@@ -285,7 +335,7 @@ app.post('/api/runs', throttle, (req, res) => {
     return res.status(200).json({ accepted: false, reason: reasons[0] });
   }
 
-  const cleanAddress = validAddress(address) ? address : null;
+  const cleanAddress = req.player.address;
   const stars = Math.min(3, Math.max(0, int(result.stars) ?? 0));
   const total = Math.round(score) + bonus;
   const entry = {
@@ -306,6 +356,11 @@ app.post('/api/runs', throttle, (req, res) => {
 
   const key = String(def.id);
   const list = store.leaderboard[key] ?? (store.leaderboard[key] = []);
+  usedRuns.set(ticket.rid, Date.now() + TICKET_TTL_MS);
+  if (usedRuns.size > 20000) {
+    const now = Date.now();
+    for (const [id, expiry] of usedRuns) if (expiry < now) usedRuns.delete(id);
+  }
   list.push(entry);
   list.sort((x, y) => y.total - x.total || x.at - y.at);
   store.leaderboard[key] = list.slice(0, LEADERBOARD_LIMIT);
@@ -403,7 +458,8 @@ app.post('/api/wallet/verify', throttle, (req, res) => {
   const linkedAt = Date.now();
   store.wallets[address] = { linkedAt, lastSeen: linkedAt };
   saveStoreSoon();
-  res.json({ verified: true, address, linkedAt });
+  const session = issueSession(address);
+  res.json({ verified: true, address, linkedAt, token: session.token, expiresAt: session.expiresAt });
 });
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown endpoint.' }));
