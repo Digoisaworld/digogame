@@ -327,7 +327,7 @@ app.get('/api/health', async (_req, res) => {
     database: { ...db, ready: dbHealthy },
     uptime: Math.round(process.uptime()),
     cluster: SOLANA_CLUSTER,
-    storage: 'legacy-json-snapshot (gameplay persistence integration pending)',
+    storage: pool ? 'postgresql (wallet, sessions, runs, results and leaderboard)' : 'memory-development-only',
     productionSecretConfigured: process.env.NODE_ENV !== 'production' || configuredRunSecret.length >= 32,
     runs: { started: store.runsStarted, accepted: store.runsAccepted, rejected: store.runsRejected },
   });
