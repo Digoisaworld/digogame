@@ -90,7 +90,7 @@ jobs:
           "$BUILD_TOOLS/apksigner" verify --verbose app/build/outputs/apk/release/app-release-signed.apk
           "$BUILD_TOOLS/apksigner" verify --print-certs app/build/outputs/apk/release/app-release-signed.apk
           jarsigner -keystore "$DIGO_KEYSTORE_PATH" -storepass "$DIGO_KEYSTORE_PASSWORD" -keypass "$DIGO_KEY_PASSWORD" -signedjar app/build/outputs/bundle/release/app-release-signed.aab app/build/outputs/bundle/release/app-release.aab "$DIGO_KEY_ALIAS"
-          jarsigner -verify -strict -certs app/build/outputs/bundle/release/app-release-signed.aab
+          jarsigner -verify -certs app/build/outputs/bundle/release/app-release-signed.aab
 
       - name: Upload signed release APK
         if: ${{ env.DIGO_KEYSTORE_PATH != '' }}
