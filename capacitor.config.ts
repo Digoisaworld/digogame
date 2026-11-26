@@ -4,7 +4,6 @@ const config: CapacitorConfig = {
   appId: 'com.digo.evolution',
   appName: 'DIGO EVOLUTION',
   webDir: 'dist',
-  bundledWebRuntime: false,
   server: {
     androidScheme: 'https',
   },
