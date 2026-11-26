@@ -488,73 +488,95 @@ app.get('/api/leaderboard', (req, res) => {
 
 /* ------------------------------ wallet ----------------------------- */
 
-app.post('/api/wallet/nonce', throttle, (req, res) => {
+app.post('/api/wallet/nonce', throttle, async (req, res) => {
   const address = req.body?.address;
   if (!validAddress(address)) return res.status(400).json({ error: 'Invalid Solana address.' });
-
   const issuedAt = Date.now();
   const expiresAt = issuedAt + 5 * 60 * 1000;
   const message = [
-    'DIGO EVOLUTION — wallet verification',
-    '',
+    'DIGO EVOLUTION — wallet verification', '',
     'Signing proves you own this address.',
     'No transaction will be sent and no funds can move.',
-    'DIGO never asks for a seed phrase or private key.',
-    '',
+    'DIGO never asks for a seed phrase or private key.', '',
     `Address: ${address}`,
     `Nonce: ${crypto.randomBytes(16).toString('hex')}`,
     `Issued: ${new Date(issuedAt).toISOString()}`,
     `Expires: ${new Date(expiresAt).toISOString()}`,
-  ].join('\n');
-
-  cleanupEphemeralState();
-  if (!Object.hasOwn(store.nonces, address) && Object.keys(store.nonces).length >= MAX_NONCES) {
-    return res.status(503).json({ error: 'Wallet challenge capacity reached. Retry shortly.' });
+  ].join('\\n');
+  try {
+    if (pool) {
+      const digest = crypto.createHash('sha256').update(message).digest('hex');
+      await query('DELETE FROM wallet_challenges WHERE expires_at < now() OR consumed_at IS NOT NULL');
+      await query(`INSERT INTO wallet_challenges(wallet_address,message,message_sha256,expires_at)
+        VALUES($1,$2,$3,$4)`, [address, message, digest, new Date(expiresAt)]);
+    } else {
+      cleanupEphemeralState();
+      if (!Object.hasOwn(store.nonces, address) && Object.keys(store.nonces).length >= MAX_NONCES)
+        return res.status(503).json({ error: 'Wallet challenge capacity reached. Retry shortly.' });
+      store.nonces[address] = { message, expiresAt };
+    }
+    res.json({ address, message, expiresAt });
+  } catch (error) {
+    console.error('Challenge persistence failed:', error.message);
+    res.status(503).json({ error: 'Wallet verification is temporarily unavailable.' });
   }
-  store.nonces[address] = { message, expiresAt };
-  res.json({ address, message, expiresAt });
 });
 
-app.post('/api/wallet/verify', throttle, (req, res) => {
+app.post('/api/wallet/verify', throttle, async (req, res) => {
   const { address, signature, message } = req.body ?? {};
   if (!validAddress(address)) return res.status(400).json({ error: 'Invalid Solana address.' });
-  if (typeof signature !== 'string' || typeof message !== 'string' || message.length > 2048 || signature.length > 128) {
+  if (typeof signature !== 'string' || typeof message !== 'string' || message.length > 2048 || signature.length > 128)
     return res.status(400).json({ error: 'Signature and message are required.' });
-  }
 
-  const pending = store.nonces[address];
-  if (!pending || pending.message !== message) {
-    return res.status(400).json({ error: 'Unknown or reused challenge. Request a new one.' });
-  }
-  if (Date.now() > pending.expiresAt) {
-    delete store.nonces[address];
-    return res.status(400).json({ error: 'Challenge expired. Request a new one.' });
+  if (pool) {
+    const check = await query(`SELECT 1 FROM wallet_challenges
+      WHERE wallet_address=$1 AND message_sha256=$2 AND message=$3
+        AND consumed_at IS NULL AND expires_at > now() LIMIT 1`,
+    [address, crypto.createHash('sha256').update(message).digest('hex'), message]);
+    if (!check.rowCount) return res.status(400).json({ error: 'Unknown or reused challenge. Request a new one.' });
+  } else {
+    const pending = store.nonces[address];
+    if (!pending || pending.message !== message)
+      return res.status(400).json({ error: 'Unknown or reused challenge. Request a new one.' });
+    if (Date.now() > pending.expiresAt) {
+      delete store.nonces[address];
+      return res.status(400).json({ error: 'Challenge expired. Request a new one.' });
+    }
   }
 
   let verified = false;
   try {
     const sig = Buffer.from(signature, 'base64');
-    // Reject malformed/non-canonical base64 and wrong Ed25519 signature lengths.
     if (sig.length === nacl.sign.signatureLength && sig.toString('base64') === signature) {
-      verified = nacl.sign.detached.verify(
-        Buffer.from(message, 'utf8'),
-        sig,
-        bs58.decode(address),
-      );
+      verified = nacl.sign.detached.verify(Buffer.from(message, 'utf8'), sig, bs58.decode(address));
     }
-  } catch {
-    verified = false;
-  }
-
-  delete store.nonces[address];
+  } catch { verified = false; }
   if (!verified) return res.status(400).json({ error: 'Signature verification failed.' });
 
-  const linkedAt = Date.now();
-  store.wallets[address] = { linkedAt, lastSeen: linkedAt };
-  saveStoreSoon();
-  const session = issueSession(address);
-  if (!session) return res.status(503).json({ error: 'Session capacity reached. Retry shortly.' });
-  res.json({ verified: true, address, linkedAt, token: session.token, expiresAt: session.expiresAt });
+  try {
+    if (pool) {
+      const digest = crypto.createHash('sha256').update(message).digest('hex');
+      const consumed = await query('SELECT * FROM consume_wallet_challenge($1,$2)', [address, digest]);
+      if (!consumed.rowCount) return res.status(409).json({ error: 'Challenge was already used or expired. Request a new one.' });
+      const player = await query(`INSERT INTO players(wallet_address,display_name,last_seen_at)
+        VALUES($1,'Player',now())
+        ON CONFLICT(wallet_address) DO UPDATE SET last_seen_at=now()
+        WHERE players.disabled_at IS NULL
+        RETURNING id`, [address]);
+      if (!player.rowCount) return res.status(403).json({ error: 'This wallet is not permitted to sign in.' });
+    } else {
+      delete store.nonces[address];
+      const linkedAt = Date.now();
+      store.wallets[address] = { linkedAt, lastSeen: linkedAt };
+      saveStoreSoon();
+    }
+    const session = await issueSession(address);
+    if (!session) return res.status(503).json({ error: 'Session capacity reached. Retry shortly.' });
+    res.json({ verified: true, address, linkedAt: Date.now(), token: session.token, expiresAt: session.expiresAt });
+  } catch (error) {
+    console.error('Wallet verification persistence failed:', error.message);
+    res.status(503).json({ error: 'Wallet sign-in storage is temporarily unavailable.' });
+  }
 });
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown endpoint.' }));
