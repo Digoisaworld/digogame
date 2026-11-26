@@ -44,6 +44,8 @@ jobs:
           sudo apt-get install -y postgresql-client
           psql -h localhost -U digo_ci -d digo_ci -v ON_ERROR_STOP=1 -f db/migrations/001_initial_schema.sql
           psql -h localhost -U digo_ci -d digo_ci -v ON_ERROR_STOP=1 -f db/tests/001_schema_smoke.sql
+      - name: Validate server JavaScript syntax
+        run: node --check server/index.js && node --check server/db.js
       - name: Type-check
         run: npm run typecheck
       - name: Campaign and gameplay regression tests
