@@ -60,13 +60,44 @@ jobs:
         working-directory: android
         run: ./gradlew --no-daemon assembleDebug bundleRelease
 
-      - name: Upload release bundle (unsigned until release keystore is configured)
+      - name: Configure release signing
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/digo-release.keystore"
+          echo "DIGO_KEYSTORE_PATH=$RUNNER_TEMP/digo-release.keystore" >> "$GITHUB_ENV"
+          echo "DIGO_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "DIGO_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "DIGO_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
+      - name: Sign release APK and verify certificate
+        if: ${{ env.DIGO_KEYSTORE_PATH != '' }}
+        working-directory: android
+        run: |
+          ./gradlew --no-daemon assembleRelease bundleRelease
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/36.0.0"
+          "$BUILD_TOOLS/apksigner" sign --ks "$DIGO_KEYSTORE_PATH" --ks-key-alias "$DIGO_KEY_ALIAS" --ks-pass "pass:$DIGO_KEYSTORE_PASSWORD" --key-pass "pass:$DIGO_KEY_PASSWORD" --out app/build/outputs/apk/release/app-release-signed.apk app/build/outputs/apk/release/app-release-unsigned.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose app/build/outputs/apk/release/app-release-signed.apk
+          "$BUILD_TOOLS/apksigner" verify --print-certs app/build/outputs/apk/release/app-release-signed.apk
+          jarsigner -verify -strict -certs app/build/outputs/bundle/release/app-release.aab
+
+      - name: Upload signed release APK
+        if: ${{ env.DIGO_KEYSTORE_PATH != '' }}
         uses: actions/upload-artifact@v4
         with:
-          name: digo-evolution-release-aab-unsigned
+          name: digo-evolution-release-apk-signed
+          path: android/app/build/outputs/apk/release/app-release-signed.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DIGO_KEYSTORE_PATH != '' && 'digo-evolution-release-aab-signed' || 'digo-evolution-release-aab-unsigned' }}
           path: android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
