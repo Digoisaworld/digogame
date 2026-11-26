@@ -72,8 +72,7 @@ npm start          # http://localhost:3000
 ## Playing on a phone
 
 1. Open the deployed URL in Chrome on Android (or any modern mobile browser).
-2. Tap **Connect Phantom** first — this build runs the wallet gate in mock/test mode,
-   so connecting unlocks the level select. No transaction is sent and no keys are requested.
+2. To use a real Phantom wallet on Android, open this website from Phantom's in-app browser: open Phantom → search bar → enter the deployed game URL → open it. Then tap **Connect Phantom** and approve the connection/sign-message prompt. Chrome and other external mobile browsers do not receive Phantom's injected provider. The current web build does not yet include a native Android app or a custom deeplink bridge.
 3. Pick a level and press **Play**.
 3. Touch anywhere in the play area and **drag** left or right — DIGO follows your finger
    and keeps moving while you hold.
@@ -85,6 +84,13 @@ Portrait orientation is the primary layout; the game also runs in landscape and 
 desktop (mouse drag and `A`/`D` or arrow keys).
 
 ---
+
+## Phantom wallet compatibility
+
+- Desktop: use the Phantom browser extension and connect from the game site.
+- Android/iOS web: open the game URL inside Phantom's in-app browser. Phantom's mobile app does not inject its provider into Chrome, Safari, or other external mobile browsers.
+- Native Android/iOS: a future Capacitor/native build must implement Phantom's encrypted deeplink protocol (`connect` + `signMessage`), secure session/key handling, and verified redirect callback. Do not pass wallet session secrets in ordinary query parameters or store them unencrypted.
+- The current backend verifies a signed server challenge; this is wallet ownership authentication only. It does not transfer DIGO tokens or authorize withdrawals.
 
 ## Full ownership / fresh clone
 
