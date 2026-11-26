@@ -2,7 +2,7 @@ name: DIGO CI
 
 on:
   push:
-    branches: [appjet, main, feat/postgres-runtime-integration]
+    branches: [appjet, main, feat/postgres-runtime-integration, feat/digogame-production-postgres]
   pull_request:
     branches: [main, feat/backend-stage1-hardening]
 
