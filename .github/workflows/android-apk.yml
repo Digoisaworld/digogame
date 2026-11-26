@@ -39,7 +39,7 @@ jobs:
           packages: platform-tools
 
       - name: Install Android platform and build tools
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Install web dependencies
         run: npm ci
@@ -56,9 +56,17 @@ jobs:
       - name: Sync web assets into Android project
         run: npx cap sync android
 
-      - name: Build debug APK
+      - name: Build debug APK and release bundle
         working-directory: android
-        run: ./gradlew --no-daemon assembleDebug
+        run: ./gradlew --no-daemon assembleDebug bundleRelease
+
+      - name: Upload release bundle (unsigned until release keystore is configured)
+        uses: actions/upload-artifact@v4
+        with:
+          name: digo-evolution-release-aab-unsigned
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
