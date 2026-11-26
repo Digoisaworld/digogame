@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import nacl from 'tweetnacl';
 import bs58 from 'bs58';
-import { verifyDatabase, databaseStatus, closeDatabase } from './db.js';
+import { verifyDatabase, databaseStatus, closeDatabase, query, pool } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, '..', 'dist');
@@ -246,20 +246,43 @@ function throttle(req, res, next) {
   next();
 }
 
-function issueSession(address) {
+async function issueSession(address) {
   cleanupEphemeralState();
-  if (sessions.size >= MAX_SESSIONS) return null;
   const sid = crypto.randomUUID();
   const expiresAt = Date.now() + SESSION_TTL_MS;
+  const token = crypto.randomBytes(32).toString('base64url');
+  if (pool) {
+    const digest = crypto.createHash('sha256').update(token).digest('hex');
+    const result = await query(`
+      SELECT create_player_session($1, players.id, $2, $3) AS created
+      FROM players WHERE wallet_address = $4 AND disabled_at IS NULL
+    `, [sid, digest, new Date(expiresAt), address]);
+    if (!result.rows[0]?.created) return null;
+    return { token, expiresAt };
+  }
+  if (sessions.size >= MAX_SESSIONS) return null;
   sessions.set(sid, { address, expiresAt });
   const body = b64url(JSON.stringify({ sid, address, exp: expiresAt }));
   const mac = crypto.createHmac('sha256', RUN_SECRET).update('session.' + body).digest('base64url');
   return { token: body + '.' + mac, expiresAt };
 }
 
-function requireSession(req, res, next) {
+async function requireSession(req, res, next) {
   const match = /^Bearer ([A-Za-z0-9_.-]+)$/.exec(req.headers.authorization || '');
   if (!match) return res.status(401).json({ error: 'Wallet sign-in required.' });
+  if (pool) {
+    try {
+      const digest = crypto.createHash('sha256').update(match[1]).digest('hex');
+      const result = await query('SELECT * FROM validate_player_session($1)', [digest]);
+      const row = result.rows[0];
+      if (!row) return res.status(401).json({ error: 'Session expired. Sign in again.' });
+      req.player = { address: row.wallet_address, id: row.player_id, sid: null };
+      return next();
+    } catch (error) {
+      console.error('Session validation failed:', error.message);
+      return res.status(503).json({ error: 'Authentication storage temporarily unavailable.' });
+    }
+  }
   const parts = match[1].split('.');
   if (parts.length !== 2) return res.status(401).json({ error: 'Invalid session.' });
   const [body, mac] = parts;
@@ -270,9 +293,7 @@ function requireSession(req, res, next) {
   let payload;
   try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); } catch { return res.status(401).json({ error: 'Invalid session.' }); }
   if (!payload || typeof payload !== 'object' || typeof payload.sid !== 'string'
-    || typeof payload.address !== 'string' || !Number.isFinite(payload.exp)) {
-    return res.status(401).json({ error: 'Invalid session.' });
-  }
+    || typeof payload.address !== 'string' || !Number.isFinite(payload.exp)) return res.status(401).json({ error: 'Invalid session.' });
   const session = sessions.get(payload.sid);
   if (!session || session.address !== payload.address || session.expiresAt !== payload.exp || Date.now() >= payload.exp) {
     sessions.delete(payload.sid);
@@ -282,9 +303,18 @@ function requireSession(req, res, next) {
   next();
 }
 
-app.post('/api/auth/logout', requireSession, (req, res) => {
-  sessions.delete(req.player.sid);
-  res.json({ ok: true });
+app.post('/api/auth/logout', requireSession, async (req, res) => {
+  try {
+    if (pool && req.player.sid) await query('SELECT revoke_player_session($1, $2)', [req.player.sid, req.player.id]);
+    else if (pool) {
+      const token = /^Bearer (.+)$/.exec(req.headers.authorization || '')?.[1];
+      if (token) await query("UPDATE player_sessions SET revoked_at = COALESCE(revoked_at, now()) WHERE token_sha256 = $1", [crypto.createHash('sha256').update(token).digest('hex')]);
+    } else sessions.delete(req.player.sid);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Logout persistence failed:', error.message);
+    res.status(503).json({ error: 'Could not revoke session. Retry.' });
+  }
 });
 
 app.get('/api/health', async (_req, res) => {
