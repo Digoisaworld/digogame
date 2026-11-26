@@ -425,6 +425,55 @@ app.post('/api/runs', throttle, requireSession, (req, res) => {
     return res.status(200).json({ accepted: false, reason: reasons[0] });
   }
 
+  if (pool) {
+    try {
+      const ticketDigest = crypto.createHash('sha256').update(token).digest('hex');
+      const run = await query(`SELECT id FROM game_runs
+        WHERE id=$1 AND player_id=$2 AND level_id=$3 AND world_id=$4
+          AND ticket_sha256=$5 AND expires_at>now() AND submitted_at IS NULL`,
+      [ticket.rid, req.player.id, ticket.level, ticket.world, ticketDigest]);
+      if (!run.rowCount) return res.status(409).json({ accepted: false, reason: 'Run ticket is unknown, expired, or already submitted.' });
+      const accepted = reasons.length === 0;
+      const cleanNameValue = cleanName(name);
+      const starsValue = Math.min(3, Math.max(0, int(result.stars) ?? 0));
+      const bonusValue = int(result.bonus) ?? 0;
+      const digoValue = int(result.digo) ?? 0;
+      const scoreValue = Math.round(score);
+      const finalized = await query(`SELECT finalize_game_run(
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb
+      ) AS result_id`, [
+        ticket.rid, req.player.id, scoreValue, bonusValue, digoValue,
+        Math.round(elapsed * 1000), starsValue, Boolean(result.victory),
+        accepted, accepted ? null : reasons[0],
+        JSON.stringify({ name: cleanNameValue, level: def.id, world: def.world,
+          score: scoreValue, bonus: bonusValue, digo: digoValue, stars: starsValue,
+          elapsed: Math.round(elapsed), collected, hits: int(result.hits) ?? 0,
+          victory: Boolean(result.victory) })
+      ]);
+      if (!finalized.rows[0]?.result_id) return res.status(409).json({ accepted: false, reason: 'Run could not be finalized; it may have expired or been submitted.' });
+      if (!accepted) {
+        store.runsRejected += 1; saveStoreSoon();
+        return res.status(200).json({ accepted: false, reason: reasons[0] });
+      }
+      const ranking = await query(`SELECT count(*)::int + 1 AS rank
+        FROM run_results rr JOIN game_runs gr ON gr.id=rr.run_id
+        JOIN players p ON p.id=rr.player_id
+        WHERE rr.accepted=true AND gr.level_id=$1 AND p.disabled_at IS NULL
+          AND (rr.score+rr.bonus)>$2`, [def.id, scoreValue + bonusValue]);
+      const best = await query(`SELECT max(rr.score+rr.bonus)::bigint AS best
+        FROM run_results rr JOIN game_runs gr ON gr.id=rr.run_id
+        JOIN players p ON p.id=rr.player_id
+        WHERE rr.accepted=true AND gr.level_id=$1 AND p.disabled_at IS NULL`, [def.id]);
+      store.runsAccepted += 1; saveStoreSoon();
+      return res.json({ accepted: true, runId: ticket.rid, total: scoreValue + bonusValue,
+        best: Number(best.rows[0]?.best ?? scoreValue + bonusValue),
+        rank: ranking.rows[0]?.rank ?? null, stars: starsValue, verified: true });
+    } catch (error) {
+      console.error('Run finalization failed:', error.message);
+      return res.status(503).json({ accepted: false, reason: 'Result storage is temporarily unavailable. Retry shortly.' });
+    }
+  }
+
   const cleanAddress = req.player.address;
   const stars = Math.min(3, Math.max(0, int(result.stars) ?? 0));
   const total = Math.round(score) + bonus;
