@@ -29,11 +29,11 @@ Stop if the dedicated database is not healthy, the network is missing, or disk s
 
 ## 2. Fetch the reviewed application branch
 
-The PostgreSQL integration is on the dedicated branch below. Do not deploy `main` or merge the draft pull request as part of this procedure.
+The reviewed PostgreSQL API, including authenticated `GET /api/progress` and `PUT /api/progress`, is on `release/phantom-audio-backend-hardening`. Do **not** deploy `feat/digogame-production-postgres`: that older branch does not contain the player-progress endpoints required by the current Android APK. Do not merge the draft branding pull request as part of this procedure.
 
 ```bash
 cd /opt
-git clone --branch feat/digogame-production-postgres --single-branch https://github.com/Digoisaworld/digogame.git digogame
+git clone --branch release/phantom-audio-backend-hardening --single-branch https://github.com/Digoisaworld/digogame.git digogame
 cd /opt/digogame
 git status --short --branch
 git log -1 --oneline
