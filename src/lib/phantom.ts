@@ -81,7 +81,7 @@ function waitForRedirect(state: string, deeplink: string): Promise<URL> {
       let callback: URL;
       try { callback = new URL(url); } catch { return; }
       if (callback.protocol !== 'com.digo.evolution:' || callback.hostname !== 'phantom-callback') return;
-      if (callback.pathname.replace(/^\\//, '') !== state) {
+      if (callback.pathname.slice(1) !== state) {
         finish(new Error('Phantom callback state mismatch. Please restart the connection.'));
         return;
       }
