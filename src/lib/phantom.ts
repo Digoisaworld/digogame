@@ -4,6 +4,7 @@
  * or private key is requested, and this module never creates/sends transactions.
  */
 import { App } from '@capacitor/app';
+import { AppLauncher } from '@capacitor/app-launcher';
 import { Capacitor } from '@capacitor/core';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
@@ -95,8 +96,11 @@ function waitForRedirect(state: string, deeplink: string): Promise<URL> {
     });
 
     // Register the callback listener before handing control to Phantom.
-    void handlePromise.then(() => { window.location.href = deeplink; }).catch(() => {
-      finish(new Error('Could not register the Phantom return handler.'));
+    void handlePromise.then(async () => {
+      const opened = await AppLauncher.openUrl({ url: deeplink });
+      if (!opened.completed) finish(new Error('Could not open Phantom. Make sure Phantom is installed and try again.'));
+    }).catch(() => {
+      finish(new Error('Could not open Phantom or register the return handler.'));
     });
   });
 }
