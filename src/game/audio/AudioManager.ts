@@ -40,7 +40,9 @@ export class AudioManager {
   /** Must be called from a user gesture (tap/click) to satisfy autoplay rules. */
   unlock(): AudioContext | null {
     if (this.ctx) {
-      if (this.ctx.state === 'suspended') void this.ctx.resume();
+      if (this.ctx.state !== 'running' && this.ctx.state !== 'closed') {
+        void this.ctx.resume().catch(() => undefined);
+      }
       return this.ctx;
     }
     const Ctor =
@@ -63,6 +65,9 @@ export class AudioManager {
       const data = buffer.getChannelData(0);
       for (let i = 0; i < len; i += 1) data[i] = Math.random() * 2 - 1;
       this.noise = buffer;
+      // Android System WebView may create the context in a suspended state.
+      // Resume immediately while still inside the user's pointer gesture.
+      void this.ctx.resume().catch(() => undefined);
     } catch {
       this.ctx = null;
     }
@@ -128,8 +133,15 @@ export class AudioManager {
   }
 
   play(name: SfxName): void {
-    if (!this.ctx) return;
-    if (this.sfxVolume <= 0) return;
+    if (!this.ctx || this.sfxVolume <= 0) return;
+    if (this.ctx.state !== 'running') {
+      const context = this.ctx;
+      if (context.state === 'closed') return;
+      void context.resume().then(() => {
+        if (this.ctx === context && context.state === 'running') this.play(name);
+      }).catch(() => undefined);
+      return;
+    }
     switch (name) {
       case 'coin':
         this.tone(1180, 0.09, 'triangle', 0.32);
@@ -207,12 +219,32 @@ export class AudioManager {
     this.tempo = world.tempo;
     this.step = 0;
     this.nextNoteTime = ctx.currentTime + 0.1;
-    if (this.musicPlaying) return;
+    if (this.musicPlaying) {
+      // If Android suspended audio while the app was backgrounded, resume the
+      // existing sequencer from the current audio clock instead of staying mute.
+      void ctx.resume().then(() => {
+        if (this.musicPlaying && this.ctx === ctx) {
+          this.nextNoteTime = ctx.currentTime + 0.05;
+          this.scheduleMusic();
+        }
+      }).catch(() => undefined);
+      return;
+    }
     this.musicPlaying = true;
     const tick = () => {
+      if (ctx.state !== 'running') {
+        void ctx.resume().catch(() => undefined);
+        return;
+      }
       this.scheduleMusic();
     };
     this.musicTimer = window.setInterval(tick, 120);
+    void ctx.resume().then(() => {
+      if (this.musicPlaying && this.ctx === ctx) {
+        this.nextNoteTime = ctx.currentTime + 0.05;
+        this.scheduleMusic();
+      }
+    }).catch(() => undefined);
   }
 
   stopMusic(): void {
