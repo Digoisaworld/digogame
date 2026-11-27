@@ -92,6 +92,18 @@ try {
   });
   assert.equal(replayChallenge.status, 400, 'wallet challenge must be single-use');
 
+  const preflight = await fetch(base + '/api/progress', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://localhost',
+      'Access-Control-Request-Method': 'PUT',
+      'Access-Control-Request-Headers': 'content-type,authorization',
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://localhost');
+  assert.match(preflight.headers.get('access-control-allow-methods') || '', /PUT/);
+
   const emptyProgress = await request('/api/progress', { token: verified.data.token });
   assert.equal(emptyProgress.status, 200, JSON.stringify(emptyProgress.data));
   assert.equal(emptyProgress.data.progress, null);
