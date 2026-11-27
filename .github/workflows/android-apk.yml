@@ -45,7 +45,7 @@ jobs:
         run: npm ci
 
       - name: Install temporary Capacitor 8 and asset toolchain
-        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3
+        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3 @capacitor/app@^8
 
       - name: Build web application
         env:
