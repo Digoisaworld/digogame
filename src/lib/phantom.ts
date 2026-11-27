@@ -63,6 +63,32 @@ function decodePayload(data: string, nonce: string, sharedSecret: Uint8Array): R
   return parsed as Record<string, unknown>;
 }
 
+async function openPhantomApp(universalLink: string): Promise<void> {
+  // Android may route an https universal link to the browser when the OS has
+  // not verified Phantom's app-link association. Prefer Phantom's custom
+  // scheme, then fall back to the documented universal link.
+  const customSchemeLink = universalLink.replace(
+    'https://phantom.app/ul/v1/',
+    'phantom://ul/v1/',
+  );
+  const candidates = customSchemeLink === universalLink
+    ? [universalLink]
+    : [customSchemeLink, universalLink];
+  let lastError: unknown;
+
+  for (const url of candidates) {
+    try {
+      const result = await AppLauncher.openUrl({ url });
+      if (result.completed) return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const detail = lastError instanceof Error ? ` (${lastError.message})` : '';
+  throw new Error(`Android could not launch Phantom. Check that Phantom is installed and try again.${detail}`);
+}
+
 function waitForRedirect(state: string, deeplink: string): Promise<URL> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -97,12 +123,13 @@ function waitForRedirect(state: string, deeplink: string): Promise<URL> {
 
     handlePromise = registration;
 
-    // Register the callback listener before handing control to Phantom.
+    // Wait until Capacitor has registered the callback listener before
+    // opening Phantom. Keep launch errors separate from listener errors.
     void registration.then(async () => {
-      const opened = await AppLauncher.openUrl({ url: deeplink });
-      if (!opened.completed) finish(new Error('Could not open Phantom. Make sure Phantom is installed and try again.'));
-    }).catch(() => {
-      finish(new Error('Could not open Phantom or register the return handler.'));
+      await openPhantomApp(deeplink);
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : 'Unknown native launch error.';
+      finish(new Error(detail));
     });
   });
 }
