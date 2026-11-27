@@ -44,8 +44,8 @@ jobs:
       - name: Install web dependencies
         run: npm ci
 
-      - name: Install temporary Capacitor 8 toolchain
-        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8
+      - name: Install temporary Capacitor 8 and asset toolchain
+        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3
 
       - name: Build web application
         env:
@@ -57,6 +57,12 @@ jobs:
 
       - name: Sync web assets into Android project
         run: npx cap sync android
+
+      - name: Generate Android icons from the official DIGO logo
+        run: |
+          mkdir -p assets
+          cp digo-logo-transparent.png assets/logo.png
+          npx capacitor-assets generate --android --iconBackgroundColor '#101827' --iconBackgroundColorDark '#101827' --splashBackgroundColor '#101827' --splashBackgroundColorDark '#101827'
 
       - name: Build release APK and bundle
         working-directory: android
