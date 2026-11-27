@@ -81,7 +81,7 @@ function waitForRedirect(state: string, deeplink: string): Promise<URL> {
       let callback: URL;
       try { callback = new URL(url); } catch { return; }
       if (callback.protocol !== 'com.digo.evolution:' || callback.hostname !== 'phantom-callback') return;
-      if (callback.searchParams.get('state') !== state) {
+      if (callback.pathname.replace(/^\\//, '') !== state) {
         finish(new Error('Phantom callback state mismatch. Please restart the connection.'));
         return;
       }
@@ -116,7 +116,7 @@ function encryptedRequest(
 async function nativeConnect(): Promise<string> {
   const keys = nacl.box.keyPair();
   const state = bs58.encode(nacl.randomBytes(16));
-  const redirect = `${CALLBACK}?state=${state}`;
+  const redirect = `${CALLBACK}/${state}`;
   const params = new URLSearchParams({
     app_url: APP_URL,
     dapp_encryption_public_key: bs58.encode(keys.publicKey),
