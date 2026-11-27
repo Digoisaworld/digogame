@@ -135,6 +135,7 @@ export function GameScreen({
   return (
     <div
       className="game"
+      onPointerDownCapture={() => gameRef.current?.startAudio()}
       style={{ ['--accent' as string]: world.accent, ['--accent2' as string]: world.accent2 }}
     >
       <div ref={mountRef} className="game-canvas" />
@@ -231,11 +232,9 @@ export function GameScreen({
         <div
           ref={padRef}
           className="control-pad"
-          onPointerDown={() => gameRef.current?.startAudio()}
-          onTouchStart={() => gameRef.current?.startAudio()}
           aria-label="Drag left or right to move DIGO, swipe up to jump; touch to enable game audio"
         />
-        {!ready && <div className="pad-hint">Drag to steer · swipe up to jump</div>}
+        {!ready && <div className="pad-hint">Touch to enable sound · drag to steer · swipe up to jump</div>}
       </div>
 
       {paused && !result && (
