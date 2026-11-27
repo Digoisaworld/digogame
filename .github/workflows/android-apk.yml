@@ -48,6 +48,8 @@ jobs:
         run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8
 
       - name: Build web application
+        env:
+          VITE_API_BASE_URL: https://game-api.anpardaz.ir/api
         run: npm run build
 
       - name: Generate Android project
@@ -108,4 +110,3 @@ jobs:
           path: android/app/build/outputs/bundle/release/app-release-signed.aab
           if-no-files-found: error
           retention-days: 30
-
