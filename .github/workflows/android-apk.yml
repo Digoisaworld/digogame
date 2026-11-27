@@ -4,6 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches: [feat/digogame-production-postgres, release/phantom-audio-backend-hardening]
+  pull_request:
+    branches: [feat/digogame-production-postgres]
 
 permissions:
   contents: read
