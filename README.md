@@ -72,7 +72,7 @@ npm start          # http://localhost:3000
 ## Playing on a phone
 
 1. Open the deployed URL in Chrome on Android (or any modern mobile browser).
-2. To use a real Phantom wallet on Android, open this website from Phantom's in-app browser: open Phantom → search bar → enter the deployed game URL → open it. Then tap **Connect Phantom** and approve the connection/sign-message prompt. Chrome and other external mobile browsers do not receive Phantom's injected provider. The current web build does not yet include a native Android app or a custom deeplink bridge.
+2. In the Android APK, tap **Connect Phantom**. The app opens Phantom using its encrypted mobile deeplink protocol; approve the connection and the separate sign-message request. In a normal browser build, use Phantom's injected provider (for mobile web, open the game inside Phantom's in-app browser).
 3. Pick a level and press **Play**.
 3. Touch anywhere in the play area and **drag** left or right — DIGO follows your finger
    and keeps moving while you hold.
@@ -88,9 +88,9 @@ desktop (mouse drag and `A`/`D` or arrow keys).
 ## Phantom wallet compatibility
 
 - Desktop: use the Phantom browser extension and connect from the game site.
-- Android/iOS web: open the game URL inside Phantom's in-app browser. Phantom's mobile app does not inject its provider into Chrome, Safari, or other external mobile browsers.
-- Native Android/iOS: a future Capacitor/native build must implement Phantom's encrypted deeplink protocol (`connect` + `signMessage`), secure session/key handling, and verified redirect callback. Do not pass wallet session secrets in ordinary query parameters or store them unencrypted.
-- The current backend verifies a signed server challenge; this is wallet ownership authentication only. It does not transfer DIGO tokens or authorize withdrawals.
+- Android APK: uses Phantom's encrypted deeplink `connect` and `signMessage` methods, a per-request state check, the registered `com.digo.evolution://phantom-callback` redirect, and the native AppLauncher to open Phantom outside the WebView.
+- Mobile web: open the game URL inside Phantom's in-app browser. External mobile browsers do not receive Phantom's injected provider.
+- The backend verifies a short-lived, single-use signed challenge and issues an opaque session whose SHA-256 digest is stored in PostgreSQL. This proves wallet ownership only; it does not transfer DIGO tokens or authorize withdrawals.
 
 ## Full ownership / fresh clone
 
@@ -208,13 +208,15 @@ exactly how a total was reached.
 | `GET` | `/api/health` | Service status, storage mode, run counters |
 | `POST` | `/api/runs/start` | Issues a signed run ticket (`runId`, `seed`, `token`) |
 | `POST` | `/api/runs` | Submits a finished run; validated against the ticket, then ranked |
-| `GET` | `/api/leaderboard?mode=` | Top scores for a mode |
+| `GET` | `/api/leaderboard?level=` | PostgreSQL-backed level leaderboard |
+| `GET` | `/api/progress` | Load the authenticated player's durable campaign progress |
+| `PUT` | `/api/progress` | Save progress with optimistic revision checking |
 | `POST` | `/api/wallet/nonce` | Returns a human-readable challenge message to sign |
 | `POST` | `/api/wallet/verify` | Verifies the ed25519 signature and links the address |
 
 ### Server-side reward validation
 
-1. A run may only be submitted with a ticket the server issued (HMAC-SHA256, 3h TTL).
+1. A run may only be submitted with a ticket the server issued (HMAC-SHA256, 30-minute TTL).
 2. Reported play time cannot exceed real elapsed time since the ticket was issued, nor
    the mode's time limit.
 3. Score is bounded by a plausible points-per-second rate, and collection counts are
@@ -222,15 +224,14 @@ exactly how a total was reached.
 4. Rejected runs are counted and returned with a reason; only accepted runs enter the
    leaderboard.
 
-The server never trusts client-submitted best scores, and never claims on-chain rewards.
+The server issues wallet-bound HMAC run tickets, rejects reused tickets, validates timing and reward plausibility, and stores results transactionally in PostgreSQL. This is a baseline anti-abuse layer, not a fully server-authoritative simulation; client-side game state can still be tampered with. Scores and DIGO shown in the game are off-chain game points, not SPL tokens and not withdrawable.
 
 ---
 
 ## Phantom / Solana preparation
 
-- **The wallet gate is mandatory before play in this build**, running in mock/test mode:
-  connect Phantom (or the built-in test adapter) and the campaign unlocks. No transaction
-  is created and no funds can move.
+- **A verified Phantom wallet session is mandatory before play in production.** Android APKs use Phantom's encrypted mobile deeplinks; browser builds use Phantom's injected provider. Production never creates a simulated wallet or silently falls back to offline gameplay.
+- The backend stores wallet challenges, hashed sessions, run tickets, accepted/rejected run results, leaderboard entries, and player campaign snapshots in PostgreSQL. Progress writes use revision checks to detect conflicting devices.
 - Wallet linking is optional and lives in Settings → Wallet.
 - The flow is: connect → request a server challenge message → user signs the message in
   Phantom → server verifies the ed25519 signature against the public key.
@@ -255,9 +256,7 @@ Copy `.env.example` to `.env`. Everything has a safe default; nothing is require
 | `ALLOWED_ORIGINS` | unset (same-origin only) | Comma-separated CORS allowlist |
 | `SOLANA_CLUSTER` | `mainnet-beta` | Cluster label reported by `/api/health` (no RPC calls are made) |
 
-Without `DATA_DIR` the leaderboard lives in memory and resets on restart. On AppJet's
-Free plan no persistent disk is available, so the in-memory default is expected; set
-`DATA_DIR` when you run the app somewhere with a writable volume.
+Production requires `DATABASE_URL` and fails closed if PostgreSQL is unavailable. Set `ALLOWED_ORIGINS` to a comma-separated allowlist containing the exact web origins used by your deployment (for the DIGO Android WebView: `https://localhost`; for the GitHub Pages site: `https://digoisaworld.github.io`).
 
 ---
 

@@ -92,6 +92,48 @@ try {
   });
   assert.equal(replayChallenge.status, 400, 'wallet challenge must be single-use');
 
+  const preflight = await fetch(base + '/api/progress', {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://localhost',
+      'Access-Control-Request-Method': 'PUT',
+      'Access-Control-Request-Headers': 'content-type,authorization',
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://localhost');
+  assert.match(preflight.headers.get('access-control-allow-methods') || '', /PUT/);
+
+  const emptyProgress = await request('/api/progress', { token: verified.data.token });
+  assert.equal(emptyProgress.status, 200, JSON.stringify(emptyProgress.data));
+  assert.equal(emptyProgress.data.progress, null);
+  assert.equal(emptyProgress.data.revision, 0);
+
+  const initialProgress = {
+    version: 3, name: 'CI Player', digo: 0, levels: {}, unlocked: 1,
+    achievements: [], lastLevel: 1, cycle: 1, cyclesCompleted: 0,
+    campaignComplete: false,
+    settings: { music: 0.4, sfx: 0.7, haptics: true, quality: 'high', control: 'both', reducedMotion: false },
+    lifetime: { points: 0, digo: 0, bonus: 0, levelsCleared: 0 },
+  };
+  const savedProgress = await request('/api/progress', {
+    method: 'PUT', token: verified.data.token,
+    body: { progress: initialProgress, expectedRevision: 0 },
+  });
+  assert.equal(savedProgress.status, 200, JSON.stringify(savedProgress.data));
+  assert.equal(savedProgress.data.revision, 1);
+
+  const loadedProgress = await request('/api/progress', { token: verified.data.token });
+  assert.equal(loadedProgress.status, 200);
+  assert.equal(loadedProgress.data.progress.name, 'CI Player');
+  assert.equal(loadedProgress.data.revision, 1);
+
+  const staleProgress = await request('/api/progress', {
+    method: 'PUT', token: verified.data.token,
+    body: { progress: initialProgress, expectedRevision: 0 },
+  });
+  assert.equal(staleProgress.status, 409, 'stale progress revisions must be rejected');
+
   const started = await request('/api/runs/start', {
     method: 'POST', token: verified.data.token, body: { level: 1 },
   });

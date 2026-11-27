@@ -135,12 +135,22 @@ export function GameScreen({
   return (
     <div
       className="game"
+      onPointerDownCapture={() => gameRef.current?.startAudio()}
       style={{ ['--accent' as string]: world.accent, ['--accent2' as string]: world.accent2 }}
     >
       <div ref={mountRef} className="game-canvas" />
 
       <div className="hud">
         <div className="hud-top">
+          <button
+            type="button"
+            className="icon-btn sound-btn"
+            onClick={() => gameRef.current?.startAudio()}
+            aria-label="Enable or resume game sound"
+            title="Enable sound"
+          >
+            ♫
+          </button>
           <button type="button" className="icon-btn" onClick={togglePause} aria-label="Pause">
             <Icon name="pause" size={18} />
           </button>
@@ -231,9 +241,9 @@ export function GameScreen({
         <div
           ref={padRef}
           className="control-pad"
-          aria-label="Drag left or right to move DIGO, swipe up to jump"
+          aria-label="Drag left or right to move DIGO, swipe up to jump; touch to enable game audio"
         />
-        {!ready && <div className="pad-hint">Drag to steer · swipe up to jump</div>}
+        {!ready && <div className="pad-hint">Touch to enable sound · drag to steer · swipe up to jump</div>}
       </div>
 
       {paused && !result && (

@@ -1,0 +1,60 @@
+name: DIGO Release Readiness
+
+on:
+  push:
+    branches: [release/phantom-audio-backend-hardening]
+  pull_request:
+    branches: [feat/digogame-production-postgres]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: digo_test
+          POSTGRES_PASSWORD: digo_test_password
+          POSTGRES_DB: digo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U digo_test -d digo_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Install temporary Capacitor build plugins
+        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3 @capacitor/app@^8 @capacitor/app-launcher@^8
+      - name: TypeScript validation
+        run: npm run typecheck
+      - name: Campaign consistency tests
+        run: npm test
+      - name: Production web build
+        env:
+          VITE_API_BASE_URL: https://game-api.anpardaz.ir/api
+        run: npm run build
+      - name: Build production Docker image
+        run: docker build --tag digo-game:ci .
+      - name: Apply PostgreSQL schema
+        env:
+          PGPASSWORD: digo_test_password
+        run: psql -h 127.0.0.1 -U digo_test -d digo_test -v ON_ERROR_STOP=1 -f db/migrations/001_initial_schema.sql
+      - name: End-to-end PostgreSQL API tests
+        env:
+          NODE_ENV: production
+          RUN_SECRET: digo-ci-only-secret-that-is-long-enough-123456
+          DATABASE_URL: postgresql://digo_test:digo_test_password@127.0.0.1:5432/digo_test
+          ALLOWED_ORIGINS: https://localhost,capacitor://localhost,http://localhost,https://digoisaworld.github.io
+        run: npm run test:api:postgres

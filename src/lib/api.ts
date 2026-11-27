@@ -1,4 +1,5 @@
 import type { RunResult, WorldId } from '../game/types';
+import type { Progress } from '../game/progress';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 let sessionToken: string | null = null;
@@ -64,6 +65,31 @@ export async function verifyWallet(address: string, signature: string, message: 
 }> {
   return post('/wallet/verify', { address, signature, message });
 }
+export interface RemoteProgress { progress: Progress | null; revision: number; updatedAt?: string; }
+export async function fetchPlayerProgress(): Promise<RemoteProgress> {
+  const res = await fetch(`${BASE}/progress`, {
+    headers: headers(true),
+    cache: 'no-store',
+  });
+  const data = (await res.json().catch(() => ({}))) as RemoteProgress & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `Progress request failed (${res.status})`);
+  return data;
+}
+export async function savePlayerProgress(progress: Progress, expectedRevision: number): Promise<{ revision: number; updatedAt?: string }> {
+  const res = await fetch(`${BASE}/progress`, {
+    method: 'PUT',
+    headers: headers(true),
+    body: JSON.stringify({ progress, expectedRevision }),
+    cache: 'no-store',
+  });
+  const data = (await res.json().catch(() => ({}))) as { revision?: number; updatedAt?: string; error?: string };
+  if (!res.ok || !Number.isSafeInteger(data.revision)) {
+    if (res.status === 401) setApiSession(null);
+    throw new Error(data.error ?? `Progress save failed (${res.status})`);
+  }
+  return { revision: data.revision as number, updatedAt: data.updatedAt };
+}
+
 export async function logoutSession(): Promise<void> {
   try { await post('/auth/logout', {}, true); } finally { setApiSession(null); }
 }

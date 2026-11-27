@@ -3,6 +3,8 @@ FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
+# The web build includes the Capacitor App callback bridge used by the Android wallet.
+RUN npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3 @capacitor/app@^8 @capacitor/app-launcher@^8
 COPY . .
 RUN npm run build && npm prune --omit=dev
 
