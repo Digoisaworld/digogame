@@ -231,7 +231,9 @@ export function GameScreen({
         <div
           ref={padRef}
           className="control-pad"
-          aria-label="Drag left or right to move DIGO, swipe up to jump"
+          onPointerDown={() => gameRef.current?.startAudio()}
+          onTouchStart={() => gameRef.current?.startAudio()}
+          aria-label="Drag left or right to move DIGO, swipe up to jump; touch to enable game audio"
         />
         {!ready && <div className="pad-hint">Drag to steer · swipe up to jump</div>}
       </div>
