@@ -36,6 +36,8 @@ jobs:
           cache: npm
       - name: Install locked dependencies
         run: npm ci
+      - name: Install temporary Capacitor bridge dependencies for type-check and web build
+        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/app@^8 @capacitor/app-launcher@^8
       - name: Validate PostgreSQL schema and invariants
         env:
           PGPASSWORD: digo_ci_test_only
