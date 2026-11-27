@@ -2,9 +2,9 @@ name: DIGO CI
 
 on:
   push:
-    branches: [appjet, main, feat/postgres-runtime-integration, feat/digogame-production-postgres]
+    branches: [appjet, main, feat/postgres-runtime-integration, feat/digogame-production-postgres, release/phantom-audio-backend-hardening, fix/digo-branding-release-polish]
   pull_request:
-    branches: [main, feat/backend-stage1-hardening]
+    branches: [main, feat/backend-stage1-hardening, release/phantom-audio-backend-hardening]
 
 permissions:
   contents: read
