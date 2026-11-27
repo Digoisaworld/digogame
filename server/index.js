@@ -653,6 +653,115 @@ app.post('/api/wallet/verify', throttle, async (req, res) => {
   }
 });
 
+
+/* ------------------------ durable player progress ------------------------ */
+
+function sanitizeProgress(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const safeInt = (value, max = 1000000000) =>
+    Number.isSafeInteger(value) && value >= 0 && value <= max ? value : null;
+  const name = typeof raw.name === 'string' ? raw.name.replace(/[^\\p{L}\\p{N} _.-]/gu, '').trim().slice(0, 18) : 'Player';
+  const unlocked = safeInt(raw.unlocked, 100);
+  const lastLevel = safeInt(raw.lastLevel, 100);
+  if (unlocked === null || unlocked < 1 || lastLevel === null || lastLevel < 1) return null;
+  if (!raw.levels || typeof raw.levels !== 'object' || Array.isArray(raw.levels)) return null;
+  const levelEntries = Object.entries(raw.levels);
+  if (levelEntries.length > 100) return null;
+  const levels = {};
+  for (const [key, value] of levelEntries) {
+    const id = Number(key);
+    if (!Number.isInteger(id) || id < 1 || id > 100 || !value || typeof value !== 'object') return null;
+    const stars = safeInt(value.stars, 3);
+    const best = safeInt(value.best);
+    const digo = safeInt(value.digo);
+    if (stars === null || best === null || digo === null || typeof value.cleared !== 'boolean') return null;
+    levels[String(id)] = { stars, best, digo, cleared: value.cleared };
+  }
+  const settings = raw.settings && typeof raw.settings === 'object' ? raw.settings : {};
+  const volume = (v, fallback) => typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : fallback;
+  const quality = ['high', 'medium', 'low'].includes(settings.quality) ? settings.quality : 'high';
+  const control = ['drag', 'buttons', 'both'].includes(settings.control) ? settings.control : 'both';
+  const achievements = Array.isArray(raw.achievements)
+    ? [...new Set(raw.achievements.filter((v) => typeof v === 'string' && /^[a-z0-9_]{1,40}$/.test(v))].slice(0, 50))
+    : [];
+  const lifetimeRaw = raw.lifetime && typeof raw.lifetime === 'object' ? raw.lifetime : {};
+  const lifetime = {
+    points: safeInt(lifetimeRaw.points) ?? 0,
+    digo: safeInt(lifetimeRaw.digo) ?? 0,
+    bonus: safeInt(lifetimeRaw.bonus) ?? 0,
+    levelsCleared: safeInt(lifetimeRaw.levelsCleared, 10000000) ?? 0,
+  };
+  return {
+    version: 3,
+    name: name || 'Player',
+    digo: safeInt(raw.digo) ?? 0,
+    levels,
+    unlocked: Math.min(100, unlocked),
+    achievements,
+    settings: {
+      music: volume(settings.music, 0.4),
+      sfx: volume(settings.sfx, 0.7),
+      haptics: settings.haptics !== false,
+      quality,
+      control,
+      reducedMotion: Boolean(settings.reducedMotion),
+    },
+    lastLevel: Math.min(100, lastLevel),
+    cycle: safeInt(raw.cycle, 10000000) ?? 1,
+    cyclesCompleted: safeInt(raw.cyclesCompleted, 10000000) ?? 0,
+    campaignComplete: Boolean(raw.campaignComplete),
+    lifetime,
+  };
+}
+
+app.get('/api/progress', throttle, requireSession, async (req, res) => {
+  try {
+    const result = await query(
+      'SELECT progress, revision, updated_at FROM player_progress WHERE player_id=$1',
+      [req.player.id],
+    );
+    if (!result.rowCount) return res.json({ progress: null, revision: 0 });
+    return res.json({
+      progress: result.rows[0].progress,
+      revision: Number(result.rows[0].revision),
+      updatedAt: result.rows[0].updated_at,
+    });
+  } catch (error) {
+    console.error('Player progress read failed:', error.message);
+    return res.status(503).json({ error: 'Player progress is temporarily unavailable.' });
+  }
+});
+
+app.put('/api/progress', throttle, requireSession, async (req, res) => {
+  const expectedRevision = req.body?.expectedRevision;
+  const progress = sanitizeProgress(req.body?.progress);
+  if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !progress) {
+    return res.status(400).json({ error: 'Invalid progress payload or revision.' });
+  }
+  try {
+    const saved = await query(
+      'SELECT * FROM save_player_progress($1,$2::jsonb,$3)',
+      [req.player.id, JSON.stringify(progress), expectedRevision],
+    );
+    if (!saved.rowCount) {
+      const current = await query('SELECT revision FROM player_progress WHERE player_id=$1', [req.player.id]);
+      return res.status(409).json({
+        error: 'Progress changed on another device. Refresh your saved progress.',
+        revision: Number(current.rows[0]?.revision ?? 0),
+      });
+    }
+    await query('UPDATE players SET display_name=$1,last_seen_at=now() WHERE id=$2', [progress.name, req.player.id]);
+    return res.json({
+      saved: true,
+      revision: Number(saved.rows[0].new_revision),
+      updatedAt: saved.rows[0].changed_at,
+    });
+  } catch (error) {
+    console.error('Player progress write failed:', error.message);
+    return res.status(503).json({ error: 'Player progress could not be saved. Retry shortly.' });
+  }
+});
+
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown endpoint.' }));
 
 /* ------------------------------ static ----------------------------- */
