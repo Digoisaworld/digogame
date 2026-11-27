@@ -86,8 +86,10 @@ jobs:
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - name: Install locked web dependencies
         run: npm ci
-      - name: Install temporary Capacitor 8 toolchain
-        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3 @capacitor/app@^8 @capacitor/app-launcher@^8
+      - name: Install Capacitor runtime plugins for native Android registration
+        run: npm install --save @capacitor/core@^8 @capacitor/app@^8 @capacitor/app-launcher@^8
+      - name: Install temporary Capacitor 8 build toolchain
+        run: npm install --no-save --package-lock=false @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3
       - name: Build web app with production API
         env:
           VITE_API_BASE_URL: https://game-api.anpardaz.ir/api
