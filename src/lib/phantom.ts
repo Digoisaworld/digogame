@@ -78,7 +78,7 @@ function waitForRedirect(state: string, deeplink: string): Promise<URL> {
       else reject(new Error('Phantom returned no callback.'));
     };
 
-    handlePromise = App.addListener('appUrlOpen', ({ url }) => {
+    const registration = App.addListener('appUrlOpen', ({ url }) => {
       let callback: URL;
       try { callback = new URL(url); } catch { return; }
       if (callback.protocol !== 'com.digo.evolution:' || callback.hostname !== 'phantom-callback') return;
@@ -95,8 +95,10 @@ function waitForRedirect(state: string, deeplink: string): Promise<URL> {
       finish(undefined, callback);
     });
 
+    handlePromise = registration;
+
     // Register the callback listener before handing control to Phantom.
-    void handlePromise.then(async () => {
+    void registration.then(async () => {
       const opened = await AppLauncher.openUrl({ url: deeplink });
       if (!opened.completed) finish(new Error('Could not open Phantom. Make sure Phantom is installed and try again.'));
     }).catch(() => {
