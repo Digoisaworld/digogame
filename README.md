@@ -208,7 +208,9 @@ exactly how a total was reached.
 | `GET` | `/api/health` | Service status, storage mode, run counters |
 | `POST` | `/api/runs/start` | Issues a signed run ticket (`runId`, `seed`, `token`) |
 | `POST` | `/api/runs` | Submits a finished run; validated against the ticket, then ranked |
-| `GET` | `/api/leaderboard?mode=` | Top scores for a mode |
+| `GET` | `/api/leaderboard?level=` | PostgreSQL-backed level leaderboard |
+| `GET` | `/api/progress` | Load the authenticated player's durable campaign progress |
+| `PUT` | `/api/progress` | Save progress with optimistic revision checking |
 | `POST` | `/api/wallet/nonce` | Returns a human-readable challenge message to sign |
 | `POST` | `/api/wallet/verify` | Verifies the ed25519 signature and links the address |
 
@@ -222,15 +224,14 @@ exactly how a total was reached.
 4. Rejected runs are counted and returned with a reason; only accepted runs enter the
    leaderboard.
 
-The server never trusts client-submitted best scores, and never claims on-chain rewards.
+The server issues wallet-bound HMAC run tickets, rejects reused tickets, validates timing and reward plausibility, and stores results transactionally in PostgreSQL. This is a baseline anti-abuse layer, not a fully server-authoritative simulation; client-side game state can still be tampered with. Scores and DIGO shown in the game are off-chain game points, not SPL tokens and not withdrawable.
 
 ---
 
 ## Phantom / Solana preparation
 
-- **The wallet gate is mandatory before play in this build**, running in mock/test mode:
-  connect Phantom (or the built-in test adapter) and the campaign unlocks. No transaction
-  is created and no funds can move.
+- **A verified Phantom wallet session is mandatory before play in production.** Android APKs use Phantom's encrypted mobile deeplinks; browser builds use Phantom's injected provider. Production never creates a simulated wallet or silently falls back to offline gameplay.
+- The backend stores wallet challenges, hashed sessions, run tickets, accepted/rejected run results, leaderboard entries, and player campaign snapshots in PostgreSQL. Progress writes use revision checks to detect conflicting devices.
 - Wallet linking is optional and lives in Settings → Wallet.
 - The flow is: connect → request a server challenge message → user signs the message in
   Phantom → server verifies the ed25519 signature against the public key.
@@ -255,9 +256,7 @@ Copy `.env.example` to `.env`. Everything has a safe default; nothing is require
 | `ALLOWED_ORIGINS` | unset (same-origin only) | Comma-separated CORS allowlist |
 | `SOLANA_CLUSTER` | `mainnet-beta` | Cluster label reported by `/api/health` (no RPC calls are made) |
 
-Without `DATA_DIR` the leaderboard lives in memory and resets on restart. On AppJet's
-Free plan no persistent disk is available, so the in-memory default is expected; set
-`DATA_DIR` when you run the app somewhere with a writable volume.
+Production requires `DATABASE_URL` and fails closed if PostgreSQL is unavailable. Set `ALLOWED_ORIGINS` to a comma-separated allowlist containing the exact web origins used by your deployment (for the DIGO Android WebView: `https://localhost`; for the GitHub Pages site: `https://digoisaworld.github.io`).
 
 ---
 
