@@ -20,11 +20,12 @@ import { shortAddress } from '../lib/phantom';
 interface Props {
   onPlay: (level: number) => void;
   launching: number | null;
+  error?: string | null;
 }
 
 type Tab = 'campaign' | 'profile' | 'help';
 
-export function Menu({ onPlay, launching }: Props) {
+export function Menu({ onPlay, launching, error }: Props) {
   const progress = useProgress();
   const wallet = useWallet();
   const [tab, setTab] = useState<Tab>('campaign');
@@ -124,6 +125,7 @@ export function Menu({ onPlay, launching }: Props) {
         )}
 
         {wallet.error && <p className="error-note">{wallet.error}</p>}
+        {error && <p className="error-note">{error}</p>}
 
         {!wallet.installed && !connected && (
           <p className="mock-note">
