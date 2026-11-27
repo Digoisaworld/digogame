@@ -14,7 +14,7 @@ import {
 import { CHAPTERS, LAST_LEVEL, LEVELS, goalLabel, levelById, nextLevelId } from '../game/levels';
 import { worldById } from '../game/worlds';
 import { DANGER_META, POWER_META, REWARD_META, type LevelDef } from '../game/types';
-import { connect, disconnect, signIn, useWallet } from '../lib/wallet';
+import { connect, disconnect, getWallet, signIn, useWallet } from '../lib/wallet';
 import { shortAddress } from '../lib/phantom';
 
 interface Props {
@@ -37,12 +37,18 @@ export function Menu({ onPlay, launching }: Props) {
   const focusLevel = levelById(playable);
   const nextObjective = nextLevelId(playable) ? goalLabel(focusLevel) : 'Final level';
   const connected = wallet.status === 'connected' && Boolean(wallet.address);
+  const canPlay = connected && wallet.verified;
 
   const handleConnect = async () => {
     setWalletBusy(true);
     try {
-      if (connected) await disconnect();
-      else await connect();
+      if (connected) {
+        await disconnect();
+      } else {
+        await connect();
+        const current = getWallet();
+        if (current.status === 'connected' && current.address) await signIn();
+      }
     } finally {
       setWalletBusy(false);
     }
@@ -79,7 +85,7 @@ export function Menu({ onPlay, launching }: Props) {
                 ? shortAddress(wallet.address)
                 : 'Connect Phantom'}
           </span>
-          {connected && <em className={`mode-tag ${wallet.mode}`}>{wallet.mode === 'mock' ? 'TEST' : 'LIVE'}</em>}
+          {connected && <em className="mode-tag phantom">{wallet.verified ? 'LIVE' : 'VERIFY'}</em>}
         </button>
       </header>
 
@@ -99,7 +105,7 @@ export function Menu({ onPlay, launching }: Props) {
           <Stat icon="trophy" label="Lifetime" value={lifetime.toLocaleString()} />
         </div>
 
-        {connected ? (
+        {canPlay ? (
           <button
             type="button"
             className="btn primary xl"
@@ -111,22 +117,9 @@ export function Menu({ onPlay, launching }: Props) {
             <span className="btn-sub">{nextObjective}</span>
           </button>
         ) : (
-          <button type="button" className="btn primary xl" onClick={handleConnect} disabled={walletBusy}>
-            <Icon name="wallet" size={20} />
-            Connect your Phantom wallet to start playing DIGO
-          </button>
-        )}
-
-        {connected && wallet.mode === 'mock' && (
-          <p className="mock-note">
-            <Icon name="info" size={14} />
-            Test mode: wallet address and DIGO balance are simulated. No transaction is ever sent.
-          </p>
-        )}
-
-        {connected && wallet.mode === 'phantom' && !wallet.verified && (
-          <button type="button" className="btn ghost sm" onClick={() => void signIn()}>
-            <Icon name="check" size={15} /> Sign message to verify ownership
+          <button type="button" className="btn primary xl" onClick={connected ? () => void signIn() : handleConnect} disabled={walletBusy || wallet.status === 'connecting'}>
+            <Icon name={connected ? 'check' : 'wallet'} size={20} />
+            {connected ? 'Verify Phantom wallet to start playing' : 'Connect your Phantom wallet to start playing DIGO'}
           </button>
         )}
 
@@ -134,7 +127,7 @@ export function Menu({ onPlay, launching }: Props) {
 
         {!wallet.installed && !connected && (
           <p className="mock-note">
-            Phantom not detected — the connect button starts a clearly labelled test wallet.
+            Install Phantom, then connect your real Solana wallet. Test wallets are disabled in production.
           </p>
         )}
       </section>
@@ -146,7 +139,7 @@ export function Menu({ onPlay, launching }: Props) {
       </nav>
 
       {tab === 'campaign' && (
-        <Campaign progress={progress} onPlay={onPlay} locked={!connected} />
+        <Campaign progress={progress} onPlay={onPlay} locked={!canPlay} />
       )}
       {tab === 'profile' && <Profile progress={progress} cleared={cleared} stars={stars} />}
       {tab === 'help' && <HowToPlay />}
