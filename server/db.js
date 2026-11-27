@@ -41,6 +41,7 @@ export async function verifyDatabase() {
       to_regclass('public.players') IS NOT NULL AS players,
       to_regclass('public.wallet_challenges') IS NOT NULL AS wallet_challenges,
       to_regclass('public.player_sessions') IS NOT NULL AS player_sessions,
+      to_regclass('public.player_progress') IS NOT NULL AS player_progress,
       to_regclass('public.game_runs') IS NOT NULL AS game_runs,
       to_regclass('public.run_results') IS NOT NULL AS run_results
   `);
