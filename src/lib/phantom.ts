@@ -29,7 +29,6 @@ const CALLBACK = 'com.digo.evolution://phantom-callback';
 const APP_URL = 'https://digoisaworld.github.io/digo-website/';
 const PHANTOM = 'https://phantom.app/ul/v1';
 type NativeSession = {
-  dappSecretKey: Uint8Array;
   dappPublicKey: Uint8Array;
   sharedSecret: Uint8Array;
   session: string;
@@ -66,13 +65,13 @@ function decodePayload(data: string, nonce: string, sharedSecret: Uint8Array): R
 function waitForRedirect(state: string, deeplink: string): Promise<URL> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    let handlePromise: ReturnType<typeof App.addListener>;
+    let handlePromise: Promise<{ remove: () => Promise<void> }> | null = null;
     const timer = window.setTimeout(() => finish(new Error('Phantom approval timed out. Please try again.')), 120_000);
     const finish = (error?: Error, url?: URL) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
-      void handlePromise?.then((handle) => handle.remove()).catch(() => undefined);
+      if (handlePromise) void handlePromise.then((handle) => handle.remove()).catch(() => undefined);
       if (error) reject(error);
       else if (url) resolve(url);
       else reject(new Error('Phantom returned no callback.'));
@@ -136,7 +135,6 @@ async function nativeConnect(): Promise<string> {
   }
   if (bs58.decode(result.public_key).length !== 32) throw new Error('Phantom returned an invalid Solana public key.');
   nativeSession = {
-    dappSecretKey: keys.secretKey,
     dappPublicKey: keys.publicKey,
     sharedSecret,
     session: result.session,
@@ -177,7 +175,7 @@ export async function signChallenge(message: string): Promise<string> {
   }
   const state = bs58.encode(nacl.randomBytes(16));
   const nonce = nacl.randomBytes(nacl.box.nonceLength);
-  const redirect = `${CALLBACK}?state=${encodeURIComponent(state)}`;
+  const redirect = `${CALLBACK}?state=${state}`;
   const payload = encryptedRequest({
     message: bs58.encode(new TextEncoder().encode(message)),
     session: nativeSession.session,
