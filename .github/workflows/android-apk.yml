@@ -3,7 +3,7 @@ name: DIGO Android APK
 on:
   workflow_dispatch:
   push:
-    branches: [feat/digogame-production-postgres]
+    branches: [feat/digogame-production-postgres, release/phantom-audio-backend-hardening]
 
 permissions:
   contents: read
