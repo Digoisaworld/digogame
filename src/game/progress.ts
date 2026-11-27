@@ -178,6 +178,21 @@ export function loadProgress(): Progress {
   return progress;
 }
 
+/** Replace the local cache with the server-owned snapshot after wallet sign-in. */
+export function replaceProgressFromServer(remote: Progress): void {
+  progress = {
+    ...defaultProgress,
+    ...remote,
+    version: 3,
+    settings: { ...defaultProgress.settings, ...(remote.settings ?? {}) },
+    levels: remote.levels && typeof remote.levels === 'object' ? remote.levels : {},
+    achievements: Array.isArray(remote.achievements) ? remote.achievements : [],
+    lifetime: { ...emptyLifetime, ...(remote.lifetime ?? {}) },
+  };
+  persist();
+  emit();
+}
+
 export function getProgress(): Progress {
   return progress;
 }
