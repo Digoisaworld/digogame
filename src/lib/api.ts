@@ -1,6 +1,6 @@
 import type { RunResult, WorldId } from '../game/types';
 
-const BASE = '/api';
+const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
 let sessionToken: string | null = null;
 
 export function setApiSession(token: string | null): void {
