@@ -1,19 +1,8 @@
 /**
- * Phantom wallet integration — with an explicit, clearly-labelled mock mode.
- *
- * Real path (Phantom installed):
- *   connect()  -> provider.connect()  -> public key only
- *   signIn()   -> server nonce -> provider.signMessage() -> server ed25519 verify
- *
- * Mock path (no extension / test mode):
- *   Generates a local, obviously simulated address so the whole connect /
- *   status / disconnect / gameplay-gate flow can be exercised without any
- *   blockchain activity. Mock balances are labelled "simulated" in the UI.
- *
- * Security: private keys and seed phrases are never requested, read or stored.
- * No transaction is ever built, signed or sent from this module.
+ * Production wallet gate. Production never manufactures a wallet or silently
+ * falls back to test mode. A player must connect Phantom and authenticate with
+ * a one-time server challenge before starting a server-backed run.
  */
-
 import { useSyncExternalStore } from 'react';
 import {
   connectWallet as phantomConnect,
@@ -31,19 +20,15 @@ export interface WalletState {
   address: string | null;
   mode: WalletMode;
   verified: boolean;
-  /** Simulated DIGO balance (never a real token balance). */
   balance: number;
   error: string | null;
   installed: boolean;
 }
 
-const STORAGE_KEY = 'digo.wallet.v2';
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-
 const initial: WalletState = {
   status: 'disconnected',
   address: null,
-  mode: 'mock',
+  mode: 'phantom',
   verified: false,
   balance: 0,
   error: null,
@@ -53,134 +38,80 @@ const initial: WalletState = {
 let state: WalletState = { ...initial };
 const listeners = new Set<() => void>();
 
-function emit(): void {
-  listeners.forEach((fn) => fn());
-}
+function emit(): void { listeners.forEach((fn) => fn()); }
 
 function set(patch: Partial<WalletState>): void {
   state = { ...state, ...patch };
-  try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        address: state.address,
-        mode: state.mode,
-        verified: false,
-        balance: state.balance,
-      }),
-    );
-  } catch {
-    /* storage can be unavailable in private mode */
-  }
+  // Do not persist a "connected" flag or bearer session in localStorage.
+  // A fresh app launch must reconnect and prove wallet ownership again.
   emit();
 }
 
-function randomAddress(): string {
-  let out = '';
-  for (let i = 0; i < 44; i += 1) {
-    out += B58[Math.floor(Math.random() * B58.length)];
-  }
-  return out;
-}
-
 export function initWallet(): void {
-  const installed = isPhantomInstalled();
-  let restored: Partial<WalletState> = {};
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) restored = JSON.parse(raw) as Partial<WalletState>;
-  } catch {
-    restored = {};
-  }
+  setApiSession(null);
   state = {
     ...initial,
-    installed,
-    address: restored.address ?? null,
-    mode: restored.mode === 'phantom' ? 'phantom' : 'mock',
-    verified: false,
-    balance: typeof restored.balance === 'number' ? restored.balance : 0,
-    status: restored.address ? 'connected' : 'disconnected',
+    installed: isPhantomInstalled(),
   };
   emit();
 }
 
-export function getWallet(): WalletState {
-  return state;
-}
-
+export function getWallet(): WalletState { return state; }
 export function subscribeWallet(fn: () => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
-
 export function useWallet(): WalletState {
   return useSyncExternalStore(subscribeWallet, getWallet, getWallet);
 }
 
-export async function connect(forceMock = false): Promise<void> {
-  set({ status: 'connecting', error: null });
-  const installed = isPhantomInstalled();
-
-  if (installed && !forceMock) {
-    try {
-      const address = await phantomConnect();
-      set({ status: 'connected', address, mode: 'phantom', installed: true, verified: false });
-      return;
-    } catch (err) {
-      set({
-        status: 'disconnected',
-        error: err instanceof Error ? err.message : 'Phantom connection was rejected.',
-        installed: true,
-      });
-      return;
-    }
+export async function connect(): Promise<void> {
+  set({ status: 'connecting', error: null, verified: false });
+  try {
+    const address = await phantomConnect();
+    set({ status: 'connected', address, mode: 'phantom', installed: true, verified: false, balance: 0 });
+  } catch (err) {
+    set({
+      status: 'disconnected',
+      address: null,
+      verified: false,
+      error: err instanceof Error ? err.message : 'Phantom connection was rejected.',
+      installed: isPhantomInstalled(),
+    });
   }
-
-  // Test mode: simulated wallet, no chain interaction at all.
-  const address = randomAddress();
-  set({
-    status: 'connected',
-    address,
-    mode: 'mock',
-    installed,
-    verified: false,
-    balance: state.balance,
-    error: null,
-  });
 }
 
 export async function signIn(): Promise<boolean> {
-  if (state.status !== 'connected' || !state.address) return false;
-  if (state.mode === 'mock') {
-    // A simulated wallet cannot prove address ownership. Keep it usable for
-    // local gameplay, but never label it as authenticated or server-verified.
-    set({ verified: false, error: 'Test wallets cannot authenticate with the server. Connect Phantom to verify ownership.' });
-    return false;
-  }
+  if (state.status !== 'connected' || !state.address || state.mode !== 'phantom') return false;
+  set({ error: null });
   try {
     const nonce = await requestNonce(state.address);
     const signature = await signChallenge(nonce.message);
     const res = await verifyWallet(state.address, signature, nonce.message);
+    if (!res.verified || res.address !== state.address || !res.token) {
+      throw new Error('The server could not verify ownership of this Phantom wallet.');
+    }
     setApiSession(res.token);
-    set({ verified: res.verified });
-    return res.verified;
+    set({ verified: true, error: null });
+    return true;
   } catch (err) {
-    set({ error: err instanceof Error ? err.message : 'Signature verification failed.' });
+    setApiSession(null);
+    set({ verified: false, error: err instanceof Error ? err.message : 'Signature verification failed.' });
     return false;
   }
 }
 
 export async function disconnect(): Promise<void> {
-  try { await logoutSession(); } catch { setApiSession(null); }
-  if (state.mode === 'phantom') await phantomDisconnect();
-  set({ status: 'disconnected', address: null, verified: false, error: null, mode: 'mock' });
-}
-
-/** Adds simulated DIGO earned in a level. Never a token transfer. */
-export function addSimulatedBalance(amount: number): void {
-  set({ balance: Math.max(0, state.balance + Math.round(amount)) });
+  try {
+    if (state.verified) await logoutSession();
+  } catch {
+    setApiSession(null);
+  }
+  await phantomDisconnect();
+  setApiSession(null);
+  set({ status: 'disconnected', address: null, verified: false, error: null, mode: 'phantom', balance: 0 });
 }
 
 export function isConnected(): boolean {
-  return state.status === 'connected' && Boolean(state.address);
+  return state.status === 'connected' && state.mode === 'phantom' && state.verified && Boolean(state.address);
 }
