@@ -682,7 +682,7 @@ function sanitizeProgress(raw) {
   const quality = ['high', 'medium', 'low'].includes(settings.quality) ? settings.quality : 'high';
   const control = ['drag', 'buttons', 'both'].includes(settings.control) ? settings.control : 'both';
   const achievements = Array.isArray(raw.achievements)
-    ? [...new Set(raw.achievements.filter((v) => typeof v === 'string' && /^[a-z0-9_]{1,40}$/.test(v)))].slice(0, 50))
+    ? [...new Set(raw.achievements.filter((v) => typeof v === 'string' && /^[a-z0-9_]{1,40}$/.test(v)))].slice(0, 50)
     : [];
   const lifetimeRaw = raw.lifetime && typeof raw.lifetime === 'object' ? raw.lifetime : {};
   const lifetime = {
