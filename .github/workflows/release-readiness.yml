@@ -36,7 +36,7 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
       - name: Install temporary Capacitor build plugins
-        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3 @capacitor/app@^8
+        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3 @capacitor/app@^8 @capacitor/app-launcher@^8
       - name: TypeScript validation
         run: npm run typecheck
       - name: Campaign consistency tests
