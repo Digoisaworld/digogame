@@ -14,7 +14,7 @@ import {
 import { CHAPTERS, LAST_LEVEL, LEVELS, goalLabel, levelById, nextLevelId } from '../game/levels';
 import { worldById } from '../game/worlds';
 import { DANGER_META, POWER_META, REWARD_META, type LevelDef } from '../game/types';
-import { connect, disconnect, getWallet, signIn, useWallet } from '../lib/wallet';
+import { cancelConnect, connect, disconnect, getWallet, signIn, useWallet } from '../lib/wallet';
 import { shortAddress } from '../lib/phantom';
 
 interface Props {
@@ -41,6 +41,12 @@ export function Menu({ onPlay, launching, error }: Props) {
   const canPlay = connected && wallet.verified;
 
   const handleConnect = async () => {
+    if (wallet.status === 'connecting') {
+      cancelConnect();
+      setWalletBusy(false);
+      return;
+    }
+    if (walletBusy) return;
     setWalletBusy(true);
     try {
       if (connected) {
@@ -76,12 +82,12 @@ export function Menu({ onPlay, launching, error }: Props) {
           type="button"
           className={`wallet-btn${connected ? ' is-on' : ''}`}
           onClick={handleConnect}
-          disabled={walletBusy || wallet.status === 'connecting'}
+          disabled={walletBusy && wallet.status !== 'connecting'}
         >
           <Icon name="wallet" size={17} />
           <span className="wallet-label">
             {wallet.status === 'connecting'
-              ? 'Connecting…'
+              ? 'Cancel connection'
               : connected && wallet.address
                 ? shortAddress(wallet.address)
                 : 'Connect Phantom'}
@@ -121,7 +127,7 @@ export function Menu({ onPlay, launching, error }: Props) {
         ) : (
           <button type="button" className="btn primary xl" onClick={connected ? () => void signIn() : handleConnect} disabled={walletBusy || wallet.status === 'connecting'}>
             <Icon name={connected ? 'check' : 'wallet'} size={20} />
-            {connected ? 'Verify Phantom wallet to start playing' : 'Connect your Phantom wallet to start playing DIGO'}
+            {wallet.status === 'connecting' ? 'Cancel Phantom connection' : connected ? 'Verify Phantom wallet to start playing' : 'Connect your Phantom wallet to start playing DIGO'}
           </button>
         )}
 

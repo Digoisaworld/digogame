@@ -20,6 +20,7 @@ const child = spawn(process.execPath, ['server/index.js'], {
     PORT: String(port),
     RUN_SECRET: runSecret,
     DATABASE_URL: databaseUrl,
+    ALLOWED_ORIGINS: 'https://localhost',
     DATA_DIR: '',
   },
   stdio: ['ignore', 'pipe', 'pipe'],

@@ -27,3 +27,38 @@ const intentFilter = `
 xml = xml.slice(0, activityEnd) + intentFilter + xml.slice(activityEnd);
 fs.writeFileSync(manifest, xml);
 console.log('Configured com.digo.evolution://phantom-callback for Phantom wallet redirects.');
+
+const activityJava = path.resolve('android/app/src/main/java/com/digo/evolution/MainActivity.java');
+fs.mkdirSync(path.dirname(activityJava), { recursive: true });
+fs.writeFileSync(activityJava, `package com.digo.evolution;
+
+import android.os.Bundle;
+import android.view.View;
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {
+    private void enterImmersiveMode() {
+        getWindow().getDecorView().setSystemUiVisibility(
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+            | View.SYSTEM_UI_FLAG_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+        );
+    }
+
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        enterImmersiveMode();
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) enterImmersiveMode();
+    }
+}
+`);
+console.log('Configured Android immersive full-screen mode (status and navigation bars hidden).');

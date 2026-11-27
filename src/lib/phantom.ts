@@ -36,6 +36,7 @@ type NativeSession = {
   address: string;
 };
 let nativeSession: NativeSession | null = null;
+let cancelPendingRedirect: (() => void) | null = null;
 
 function getProvider(): PhantomProvider | null {
   if (typeof window === 'undefined') return null;
@@ -63,26 +64,47 @@ function decodePayload(data: string, nonce: string, sharedSecret: Uint8Array): R
   return parsed as Record<string, unknown>;
 }
 
+async function openPhantomApp(universalLink: string): Promise<void> {
+  // Use Phantom's documented universal-link endpoint. Opening the app's
+  // custom scheme can foreground Phantom without presenting the connect sheet
+  // on some Android builds.
+  const result = await AppLauncher.openUrl({ url: universalLink });
+  if (!result.completed) {
+    throw new Error('Android could not open the Phantom connection request.');
+  }
+}
+
 function waitForRedirect(state: string, deeplink: string): Promise<URL> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let handlePromise: Promise<{ remove: () => Promise<void> }> | null = null;
-    const timer = window.setTimeout(() => finish(new Error('Phantom approval timed out. Please try again.')), 120_000);
     const finish = (error?: Error, url?: URL) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
+      if (cancelPendingRedirect === cancel) cancelPendingRedirect = null;
       if (handlePromise) void handlePromise.then((handle) => handle.remove()).catch(() => undefined);
       if (error) reject(error);
       else if (url) resolve(url);
       else reject(new Error('Phantom returned no callback.'));
     };
+    const cancel = () => {
+      const error = new Error('Connection cancelled.');
+      error.name = 'AbortError';
+      finish(error);
+    };
+    const timer = window.setTimeout(
+      () => finish(new Error('Phantom approval timed out. Please try again.')),
+      120_000,
+    );
+    cancelPendingRedirect = cancel;
 
-    handlePromise = App.addListener('appUrlOpen', ({ url }) => {
+    const onUrl = ({ url }: { url: string }) => {
       let callback: URL;
       try { callback = new URL(url); } catch { return; }
       if (callback.protocol !== 'com.digo.evolution:' || callback.hostname !== 'phantom-callback') return;
-      const returnedState = callback.searchParams.get('state') ?? (callback.pathname.startsWith('/') ? callback.pathname.slice(1) : callback.pathname);
+      const returnedState = callback.searchParams.get('state')
+        ?? (callback.pathname.startsWith('/') ? callback.pathname.slice(1) : callback.pathname);
       if (returnedState !== state) {
         finish(new Error('Phantom callback state mismatch. Please restart the connection.'));
         return;
@@ -93,16 +115,23 @@ function waitForRedirect(state: string, deeplink: string): Promise<URL> {
         return;
       }
       finish(undefined, callback);
-    });
+    };
 
-    // Register the callback listener before handing control to Phantom.
-    void handlePromise.then(async () => {
-      const opened = await AppLauncher.openUrl({ url: deeplink });
-      if (!opened.completed) finish(new Error('Could not open Phantom. Make sure Phantom is installed and try again.'));
-    }).catch(() => {
-      finish(new Error('Could not open Phantom or register the return handler.'));
+    const registration = App.addListener('appUrlOpen', onUrl);
+    handlePromise = registration;
+    void registration.then(async () => {
+      if (settled) return;
+      await openPhantomApp(deeplink);
+    }).catch((error: unknown) => {
+      if (settled) return;
+      const detail = error instanceof Error ? error.message : 'Unknown native launch error.';
+      finish(new Error(detail));
     });
   });
+}
+
+export function cancelPendingConnection(): void {
+  cancelPendingRedirect?.();
 }
 
 function encryptedRequest(

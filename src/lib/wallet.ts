@@ -6,6 +6,7 @@
 import { useSyncExternalStore } from 'react';
 import {
   connectWallet as phantomConnect,
+  cancelPendingConnection,
   disconnectWallet as phantomDisconnect,
   isPhantomInstalled,
   signChallenge,
@@ -75,10 +76,23 @@ export async function connect(): Promise<void> {
       status: 'disconnected',
       address: null,
       verified: false,
-      error: err instanceof Error ? err.message : 'Phantom connection was rejected.',
+      error: err instanceof Error && err.name === 'AbortError' ? null : err instanceof Error ? err.message : 'Phantom connection was rejected.',
       installed: isPhantomInstalled(),
     });
   }
+}
+
+export function cancelConnect(): void {
+  if (state.status !== 'connecting') return;
+  cancelPendingConnection();
+  set({
+    status: 'disconnected',
+    address: null,
+    verified: false,
+    error: null,
+    mode: 'phantom',
+    balance: 0,
+  });
 }
 
 export async function signIn(): Promise<boolean> {
