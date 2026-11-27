@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Menu } from './ui/Menu';
 import { GameScreen } from './ui/GameScreen';
 import { initWallet, useWallet } from './lib/wallet';
-import { loadProgress, recordRun, startNewJourney } from './game/progress';
-import { startRun, submitRun } from './lib/api';
+import { getProgress, loadProgress, recordRun, replaceProgressFromServer, resetProgress, startNewJourney } from './game/progress';
+import { fetchPlayerProgress, savePlayerProgress, startRun, submitRun } from './lib/api';
 import type { Achievement } from './game/progress';
 import type { RunResult } from './game/types';
 
@@ -13,11 +13,8 @@ export interface FinishReport {
   newAchievements: Achievement[];
   verdict: string | null;
   verified: boolean;
-  /** Completion bonus paid for this run. */
   bonus: number;
-  /** Points awarded for achievements unlocked by this run. */
   achievementPoints: number;
-  /** True on the run that clears level 100 for the current journey. */
   campaignComplete: boolean;
   cyclesCompleted: number;
   lifetimePoints: number;
@@ -28,7 +25,7 @@ export interface FinishReport {
 
 type Route =
   | { name: 'menu' }
-  | { name: 'game'; level: number; seed: number; token: string | null; attempt: number };
+  | { name: 'game'; level: number; seed: number; token: string; attempt: number };
 
 let booted = false;
 
@@ -36,8 +33,10 @@ export function App() {
   const wallet = useWallet();
   const [route, setRoute] = useState<Route>({ name: 'menu' });
   const [launching, setLaunching] = useState<number | null>(null);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [progressReady, setProgressReady] = useState(false);
+  const progressRevision = useRef(0);
 
-  // Load the save file and detect Phantom once, before the first paint settles.
   useEffect(() => {
     if (booted) return;
     booted = true;
@@ -45,57 +44,102 @@ export function App() {
     initWallet();
   }, []);
 
+  // The account's durable campaign is loaded only after the backend has
+  // verified the wallet. Legacy local test progress is not promoted to rewards.
+  useEffect(() => {
+    if (!wallet.verified || !wallet.address) {
+      setProgressReady(false);
+      progressRevision.current = 0;
+      return;
+    }
+    let active = true;
+    setProgressReady(false);
+    setLaunchError(null);
+    void (async () => {
+      const remote = await fetchPlayerProgress();
+      if (!active) return;
+      if (remote.progress) {
+        replaceProgressFromServer(remote.progress);
+        progressRevision.current = remote.revision;
+      } else {
+        resetProgress();
+        const saved = await savePlayerProgress(getProgress(), 0);
+        progressRevision.current = saved.revision;
+      }
+      if (active) setProgressReady(true);
+    })().catch((error: unknown) => {
+      if (!active) return;
+      setLaunchError(error instanceof Error ? error.message : 'Could not load your account data.');
+      setProgressReady(false);
+    });
+    return () => { active = false; };
+  }, [wallet.verified, wallet.address]);
+
   const launch = useCallback(async (level: number) => {
+    if (!wallet.verified) {
+      setLaunchError('Connect and verify your real Phantom wallet before playing.');
+      return;
+    }
+    if (!progressReady) {
+      setLaunchError('Your account data is still syncing. Please wait a moment and try again.');
+      return;
+    }
     setLaunching(level);
-    let seed = Math.floor(Math.random() * 2 ** 31);
-    let token: string | null = null;
+    setLaunchError(null);
     try {
       const ticket = await startRun(level);
-      seed = ticket.seed;
-      token = ticket.token;
-    } catch {
-      // Offline or API unavailable: the level still plays with a local seed.
+      setRoute({ name: 'game', level, seed: ticket.seed, token: ticket.token, attempt: 0 });
+    } catch (error) {
+      setLaunchError(error instanceof Error ? error.message : 'The game server could not start a verified run.');
+    } finally {
+      setLaunching(null);
     }
-    setLaunching(null);
-    setRoute({ name: 'game', level, seed, token, attempt: 0 });
-  }, []);
+  }, [wallet.verified, progressReady]);
 
   const finish = useCallback(
     async (result: RunResult): Promise<FinishReport> => {
-      const outcome = recordRun(result);
       const current = route;
       let verdict: string | null = null;
       let verified = false;
-      if (current.name === 'game' && current.token) {
+      let outcome: ReturnType<typeof recordRun> | null = null;
+      if (current.name === 'game' && wallet.verified) {
         try {
-          const res = await submitRun(current.token, result, 'DIGO Player');
-          verified = Boolean(res.accepted);
-          verdict = res.accepted
-            ? `Server verified${res.rank ? ` · rank #${res.rank}` : ''}`
-            : res.reason ?? 'Run not verified';
-        } catch {
-          verdict = 'Score saved locally (server unavailable)';
+          const res = await submitRun(current.token, result, getProgress().name);
+          verified = Boolean(res.accepted && res.verified);
+          if (verified) {
+            outcome = recordRun(result);
+            const saved = await savePlayerProgress(getProgress(), progressRevision.current);
+            progressRevision.current = saved.revision;
+            verdict = `Server verified${res.rank ? ` · rank #${res.rank}` : ''}`;
+          } else {
+            verdict = res.reason ?? 'The server rejected this run. No progress was awarded.';
+          }
+        } catch (error) {
+          verdict = error instanceof Error
+            ? `Server verification failed: ${error.message}. No progress was awarded.`
+            : 'Server verification failed. No progress was awarded.';
         }
       } else {
-        verdict = 'Score saved locally';
+        verdict = 'Wallet session missing. No progress was awarded.';
       }
+
       return {
-        newBest: outcome.newBest,
-        unlockedNext: outcome.unlockedNext,
-        newAchievements: outcome.newAchievements,
+        newBest: outcome?.newBest ?? false,
+        unlockedNext: outcome?.unlockedNext ?? null,
+        newAchievements: outcome?.newAchievements ?? [],
         verdict,
         verified,
-        bonus: outcome.bonus,
-        achievementPoints: outcome.achievementPoints,
-        campaignComplete: outcome.campaignComplete,
-        cyclesCompleted: outcome.cyclesCompleted,
-        lifetimePoints: outcome.lifetimePoints,
-        lifetimeDigo: outcome.lifetimeDigo,
-        lifetimeBonus: outcome.lifetimeBonus,
-        levelsCleared: outcome.levelsCleared,
+        bonus: outcome?.bonus ?? 0,
+        achievementPoints: outcome?.achievementPoints ?? 0,
+        campaignComplete: outcome?.campaignComplete ?? false,
+        cyclesCompleted: outcome?.cyclesCompleted ?? getProgress().cyclesCompleted,
+        lifetimePoints: outcome?.lifetimePoints ?? getProgress().lifetime.points,
+        lifetimeDigo: outcome?.lifetimeDigo ?? getProgress().lifetime.digo,
+        lifetimeBonus: outcome?.lifetimeBonus ?? getProgress().lifetime.bonus,
+        levelsCleared: outcome?.levelsCleared ?? Object.values(getProgress().levels).filter((entry) => entry.cleared).length,
       };
     },
-    [route, wallet.address],
+    [route, wallet.verified],
   );
 
   if (route.name === 'game') {
@@ -105,26 +149,21 @@ export function App() {
         level={route.level}
         seed={route.seed}
         onExit={() => setRoute({ name: 'menu' })}
-        onRetry={() =>
-          setRoute({
-            ...route,
-            attempt: route.attempt + 1,
-            seed: Math.floor(Math.random() * 2 ** 31),
-          })
-        }
+        onRetry={() => void launch(route.level)}
         onNext={(level) => void launch(level)}
         onNewJourney={() => {
-          // Restarts the campaign at level 1; lifetime points, DIGO and
-          // achievements stay untouched.
           startNewJourney();
-          void launch(1);
+          void savePlayerProgress(getProgress(), progressRevision.current)
+            .then((saved) => { progressRevision.current = saved.revision; })
+            .then(() => launch(1))
+            .catch((error: unknown) => setLaunchError(error instanceof Error ? error.message : 'Could not save campaign progress.'));
         }}
         onFinish={finish}
       />
     );
   }
 
-  return <Menu onPlay={(level) => void launch(level)} launching={launching} />;
+  return <Menu onPlay={(level) => void launch(level)} launching={launching} error={launchError} />;
 }
 
 export default App;
