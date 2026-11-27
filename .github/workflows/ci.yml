@@ -58,3 +58,56 @@ jobs:
         run: npm run build
       - name: Build production Docker image
         run: docker build --pull -t digo-game:ci .
+
+  android-debug:
+    name: Build Android debug APK (no signing secrets required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android platform and build tools
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Install locked web dependencies
+        run: npm ci
+      - name: Install temporary Capacitor 8 toolchain
+        run: npm install --no-save --package-lock=false @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8 @capacitor/assets@^3 @capacitor/app@^8 @capacitor/app-launcher@^8
+      - name: Build web app with production API
+        env:
+          VITE_API_BASE_URL: https://game-api.anpardaz.ir/api
+        run: npm run build
+      - name: Generate Android project
+        run: npx cap add android
+      - name: Configure Phantom callback deep link
+        run: node scripts/configure-android-phantom-callback.mjs
+      - name: Sync Android web assets
+        run: npx cap sync android
+      - name: Generate official DIGO launcher and splash assets
+        run: |
+          mkdir -p assets
+          cp digo-logo-transparent.png assets/logo.png
+          npx capacitor-assets generate --android --iconBackgroundColor '#101827' --iconBackgroundColorDark '#101827' --splashBackgroundColor '#101827' --splashBackgroundColorDark '#101827'
+      - name: Compile Android debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+      - name: Upload debug APK for device testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: digo-evolution-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
