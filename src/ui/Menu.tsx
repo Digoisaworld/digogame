@@ -86,7 +86,7 @@ export function Menu({ onPlay, launching, error }: Props) {
                 ? shortAddress(wallet.address)
                 : 'Connect Phantom'}
           </span>
-          {connected && <em className="mode-tag phantom">{wallet.verified ? 'LIVE' : 'VERIFY'}</em>}
+          {connected && <em className="mode-tag phantom">{wallet.verified ? 'VERIFIED' : 'VERIFY'}</em>}
         </button>
       </header>
 
@@ -99,6 +99,7 @@ export function Menu({ onPlay, launching, error }: Props) {
           DIGO <span>EVOLUTION</span>
         </h1>
         <p className="hero-sub">Run the lane. Bank the gold. Never touch a bomb.</p>
+        <p className="mock-note">DIGO shown here is an in-game score only, not an on-chain token balance or withdrawable reward.</p>
 
         <div className="stat-row">
           <Stat icon="star" label="Stars" value={`${stars}/${LAST_LEVEL * 3}`} />
