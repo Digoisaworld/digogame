@@ -43,7 +43,7 @@ function getProvider(): PhantomProvider | null {
 }
 
 export function isPhantomInstalled(): boolean {
-  return getProvider() !== null;
+  return getProvider() !== null || Capacitor.getPlatform() === 'android';
 }
 
 function toBase64(bytes: Uint8Array): string {
