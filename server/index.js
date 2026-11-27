@@ -660,7 +660,7 @@ function sanitizeProgress(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const safeInt = (value, max = 1000000000) =>
     Number.isSafeInteger(value) && value >= 0 && value <= max ? value : null;
-  const name = typeof raw.name === 'string' ? raw.name.replace(/[^\\p{L}\\p{N} _.-]/gu, '').trim().slice(0, 18) : 'Player';
+  const name = typeof raw.name === 'string' ? raw.name.replace(/[^\p{L}\p{N} _.-]/gu, '').trim().slice(0, 18) : 'Player';
   const unlocked = safeInt(raw.unlocked, 100);
   const lastLevel = safeInt(raw.lastLevel, 100);
   if (unlocked === null || unlocked < 1 || lastLevel === null || lastLevel < 1) return null;
