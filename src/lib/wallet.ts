@@ -76,7 +76,7 @@ export async function connect(): Promise<void> {
       status: 'disconnected',
       address: null,
       verified: false,
-      error: err instanceof Error ? err.message : 'Phantom connection was rejected.',
+      error: err instanceof Error && err.name === 'AbortError' ? null : err instanceof Error ? err.message : 'Phantom connection was rejected.',
       installed: isPhantomInstalled(),
     });
   }
