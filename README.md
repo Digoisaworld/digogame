@@ -72,7 +72,7 @@ npm start          # http://localhost:3000
 ## Playing on a phone
 
 1. Open the deployed URL in Chrome on Android (or any modern mobile browser).
-2. To use a real Phantom wallet on Android, open this website from Phantom's in-app browser: open Phantom → search bar → enter the deployed game URL → open it. Then tap **Connect Phantom** and approve the connection/sign-message prompt. Chrome and other external mobile browsers do not receive Phantom's injected provider. The current web build does not yet include a native Android app or a custom deeplink bridge.
+2. In the Android APK, tap **Connect Phantom**. The app opens Phantom using its encrypted mobile deeplink protocol; approve the connection and the separate sign-message request. In a normal browser build, use Phantom's injected provider (for mobile web, open the game inside Phantom's in-app browser).
 3. Pick a level and press **Play**.
 3. Touch anywhere in the play area and **drag** left or right — DIGO follows your finger
    and keeps moving while you hold.
@@ -88,9 +88,9 @@ desktop (mouse drag and `A`/`D` or arrow keys).
 ## Phantom wallet compatibility
 
 - Desktop: use the Phantom browser extension and connect from the game site.
-- Android/iOS web: open the game URL inside Phantom's in-app browser. Phantom's mobile app does not inject its provider into Chrome, Safari, or other external mobile browsers.
-- Native Android/iOS: a future Capacitor/native build must implement Phantom's encrypted deeplink protocol (`connect` + `signMessage`), secure session/key handling, and verified redirect callback. Do not pass wallet session secrets in ordinary query parameters or store them unencrypted.
-- The current backend verifies a signed server challenge; this is wallet ownership authentication only. It does not transfer DIGO tokens or authorize withdrawals.
+- Android APK: uses Phantom's encrypted deeplink `connect` and `signMessage` methods, a per-request state check, the registered `com.digo.evolution://phantom-callback` redirect, and the native AppLauncher to open Phantom outside the WebView.
+- Mobile web: open the game URL inside Phantom's in-app browser. External mobile browsers do not receive Phantom's injected provider.
+- The backend verifies a short-lived, single-use signed challenge and issues an opaque session whose SHA-256 digest is stored in PostgreSQL. This proves wallet ownership only; it does not transfer DIGO tokens or authorize withdrawals.
 
 ## Full ownership / fresh clone
 
@@ -216,7 +216,7 @@ exactly how a total was reached.
 
 ### Server-side reward validation
 
-1. A run may only be submitted with a ticket the server issued (HMAC-SHA256, 3h TTL).
+1. A run may only be submitted with a ticket the server issued (HMAC-SHA256, 30-minute TTL).
 2. Reported play time cannot exceed real elapsed time since the ticket was issued, nor
    the mode's time limit.
 3. Score is bounded by a plausible points-per-second rate, and collection counts are
