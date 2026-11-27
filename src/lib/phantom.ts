@@ -44,7 +44,7 @@ function getProvider(): PhantomProvider | null {
 }
 
 export function isPhantomInstalled(): boolean {
-  return getProvider() !== null || Capacitor.isNativePlatform();
+  return getProvider() !== null;
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -117,7 +117,7 @@ function encryptedRequest(
 async function nativeConnect(): Promise<string> {
   const keys = nacl.box.keyPair();
   const state = bs58.encode(nacl.randomBytes(16));
-  const redirect = `${CALLBACK}?state=${encodeURIComponent(state)}`;
+  const redirect = `${CALLBACK}?state=${state}`;
   const params = new URLSearchParams({
     app_url: APP_URL,
     dapp_encryption_public_key: bs58.encode(keys.publicKey),
