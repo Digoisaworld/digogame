@@ -54,4 +54,5 @@ jobs:
           NODE_ENV: production
           RUN_SECRET: digo-ci-only-secret-that-is-long-enough-123456
           DATABASE_URL: postgresql://digo_test:digo_test_password@127.0.0.1:5432/digo_test
+          ALLOWED_ORIGINS: https://localhost,capacitor://localhost,http://localhost,https://digoisaworld.github.io
         run: npm run test:api:postgres
